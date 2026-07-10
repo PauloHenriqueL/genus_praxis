@@ -1,29 +1,12 @@
-import { useState, useRef } from 'react';
-import { api } from '../api';
+import { useState, useEffect } from 'react';
+import { api, assetUrl } from '../api';
 import Typewriter from '../components/Typewriter';
+import PhotoCropper from '../components/PhotoCropper';
+import { canReopenInCropper } from '../cropMath';
 import { ICONS } from '../icons';
+import '../styles/Profile.css';
 
 const ROLE_LABELS = { admin: 'Administrador', supervisor: 'Professor', therapist: 'Aluno' };
-
-// Redimensiona a foto de perfil para um quadrado de 256px (data URL JPEG).
-function fileToSquareDataUrl(file, size = 256) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      const side = Math.min(img.width, img.height);
-      const sx = (img.width - side) / 2;
-      const sy = (img.height - side) / 2;
-      const c = document.createElement('canvas');
-      c.width = size; c.height = size;
-      c.getContext('2d').drawImage(img, sx, sy, side, side, 0, 0, size, size);
-      resolve(c.toDataURL('image/jpeg', 0.85));
-    };
-    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
-    img.src = url;
-  });
-}
 
 export default function Profile({ user, onUpdate }) {
   const [name, setName] = useState(user.name || '');
@@ -32,7 +15,7 @@ export default function Profile({ user, onUpdate }) {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
-  const fileRef = useRef(null);
+  const [showCropper, setShowCropper] = useState(false);
 
   const [curPwd, setCurPwd] = useState('');
   const [newPwd, setNewPwd] = useState('');
@@ -40,12 +23,53 @@ export default function Profile({ user, onUpdate }) {
   const [pwdMsg, setPwdMsg] = useState('');
   const [pwdErr, setPwdErr] = useState('');
 
-  async function handlePhoto(e) {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
-    try { setPhoto(await fileToSquareDataUrl(file)); }
-    catch { setErr('Não foi possível processar a imagem.'); }
+  // Avatares prontos servidos pelo backend (/profiles_icon).
+  const [gallery, setGallery] = useState([]);
+
+  // Conquistas, constância e título exibido. Visitante não tem nada disso.
+  const isVisitor = user.role === 'visitor';
+  const [gamification, setGamification] = useState(null);
+  const [activeTitle, setActiveTitle] = useState(user.activeTitle || '');
+  const [titleSaving, setTitleSaving] = useState(false);
+  const [titleErr, setTitleErr] = useState('');
+
+  useEffect(() => {
+    api.getProfilePhotos().then(setGallery).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (isVisitor || !user.id) return;
+    api.getGamification(user.id).then(setGamification).catch(() => {});
+  }, [user.id, isVisitor]);
+
+  const earned = (gamification?.achievements || []).filter((a) => a.earned);
+  const streak = gamification?.streak;
+
+  // O cropper devolve o recorte já enquadrado (JPEG 320×320). Nada é salvo aqui:
+  // a foto só vai ao servidor quando o usuário clica em "Salvar perfil".
+  function handleCropDone(dataUrl) {
+    setPhoto(dataUrl);
+    setShowCropper(false);
+    setErr('');
+  }
+
+  // Clicar no título ativo remove (titleId vazio limpa no backend).
+  // Ao limpar, o servidor OMITE `activeTitle` do usuário — por isso normalizamos
+  // a chave para '' em vez de espalhar `updated` sobre o `user` antigo, o que
+  // manteria o título anterior e deixaria o selo preso na barra lateral.
+  async function selectTitle(id) {
+    if (titleSaving) return;
+    const next = id === activeTitle ? '' : id;
+    setTitleSaving(true); setTitleErr('');
+    try {
+      const updated = await api.setMyTitle(next);
+      setActiveTitle(updated.activeTitle || '');
+      onUpdate({ ...user, ...updated, activeTitle: updated.activeTitle || '' });
+    } catch (e2) {
+      setTitleErr(e2.message || 'Erro ao definir o título.');
+    } finally {
+      setTitleSaving(false);
+    }
   }
 
   async function saveProfile(e) {
@@ -79,31 +103,138 @@ export default function Profile({ user, onUpdate }) {
     }
   }
 
+  // O visitante é efêmero: não existe em users.json, então salvar o perfil ou
+  // trocar a senha responderia 404/401. Mostramos o aviso em vez do formulário.
+  if (isVisitor) {
+    return (
+      <div className="profile-page">
+        <div className="page-header">
+          <div className="eyebrow">Conta</div>
+          <h2><Typewriter text="Visi" /><span className="accent"><Typewriter text="tante" delayStart={280} /></span></h2>
+          <div className="ornament" />
+        </div>
+        <div className="card" style={{ textAlign: 'center', padding: '40px 24px' }}>
+          <p style={{ margin: 0, color: 'var(--text-soft)' }}>
+            Você está em uma <strong>sessão temporária</strong>. Ela não guarda perfil, progresso,
+            títulos nem histórico. Peça uma conta ao seu professor para acompanhar sua evolução.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div>
+    <div className="profile-page">
       <div className="page-header">
         <div className="eyebrow">Conta</div>
         <h2><Typewriter text="Meu " /><span className="accent"><Typewriter text="Perfil" delayStart={280} /></span></h2>
-        <p>Gerencie seus dados, sua foto e sua senha.</p>
+        <p>Gerencie seus dados, sua foto, seu título e sua senha.</p>
         <div className="ornament" />
       </div>
+
+      {!isVisitor && (streak?.isAlive || earned.length > 0) && (
+        <section className="card profile-achievements">
+          <h3 className="card-title">Metas alcançadas</h3>
+
+          {streak?.isAlive && (
+            <div className={`streak-badge ${streak.status}`}>
+              <span className="badge-flame">●</span>
+              {streak.status === 'monthly' ? 'Constância mensal' : streak.status === 'weekly' ? 'Constância semanal' : 'Constância'}
+              {' · '}
+              {streak.current} {streak.current === 1 ? 'dia' : 'dias'}
+            </div>
+          )}
+
+          {earned.length === 0 ? (
+            <p className="muted" style={{ fontSize: 13.5 }}>
+              Nenhuma meta alcançada ainda. Conclua os objetivos diários e mantenha a constância para registrar marcos.
+            </p>
+          ) : (
+            <>
+              <div className="profile-badges">
+                {earned.map((a) => (
+                  <div key={a.id} className={`profile-badge tier-${a.tier}`} title={a.description}>
+                    <div className="profile-badge-icon">{a.icon}</div>
+                    <div className="profile-badge-title">{a.title}</div>
+                    {a.earnedAt && (
+                      <div className="profile-badge-date">{new Date(a.earnedAt).toLocaleDateString('pt-BR')}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div className="profile-title-picker">
+                <h4>Título exibido</h4>
+                <p className="muted" style={{ fontSize: 13.5, marginBottom: 12 }}>
+                  Escolha um título desbloqueado para exibir sob o seu nome, no menu e no ranking.
+                  Clique no ativo para remover.
+                </p>
+                {titleErr && <div className="alert error" style={{ marginBottom: 10 }}>{titleErr}</div>}
+                <div className="title-chips">
+                  <button
+                    type="button"
+                    className={`title-chip ${!activeTitle ? 'active' : ''}`}
+                    onClick={() => selectTitle('')}
+                    disabled={titleSaving || !activeTitle}
+                  >
+                    Nenhum
+                  </button>
+                  {earned.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className={`title-chip tier-${a.tier} ${activeTitle === a.id ? 'active' : ''}`}
+                      onClick={() => selectTitle(a.id)}
+                      disabled={titleSaving}
+                      title={a.description}
+                    >
+                      {a.icon} {a.title}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       <div className="profile-grid">
         <form className="card admin-form" onSubmit={saveProfile}>
           <div className="profile-photo-row">
             <span className="profile-photo-avatar">
-              {photo ? <img src={photo} alt={name} /> : ICONS.user}
+              {photo ? <img src={assetUrl(photo)} alt={name} /> : ICONS.user}
             </span>
             <div>
               <div className="profile-photo-name">{user.name}</div>
               <div className="muted">{ROLE_LABELS[user.role] || user.role}{user.teacherName ? ` · Professor: ${user.teacherName}` : ''}</div>
               <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
-                <button type="button" className="btn btn-outline btn-sm" onClick={() => fileRef.current?.click()}>Trocar foto</button>
+                <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowCropper(true)}>
+                  {photo ? 'Trocar foto' : 'Enviar foto'}
+                </button>
                 {photo && <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPhoto('')}>Remover</button>}
-                <input ref={fileRef} type="file" accept="image/*" onChange={handlePhoto} style={{ display: 'none' }} />
               </div>
             </div>
           </div>
+
+          {gallery.length > 0 && (
+            <div>
+              <label>Ou escolha um avatar</label>
+              <div className="photo-gallery">
+                {gallery.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className={`photo-gallery-item ${photo === p ? 'active' : ''}`}
+                    onClick={() => setPhoto(photo === p ? '' : p)}
+                    title="Usar este avatar"
+                  >
+                    <img src={assetUrl(p)} alt="" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
             <label htmlFor="pname">Nome</label>
             <input id="pname" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -136,6 +267,23 @@ export default function Profile({ user, onUpdate }) {
           <div><button type="submit" className="btn btn-primary" disabled={pwdSaving}>{pwdSaving ? 'Salvando…' : 'Alterar senha'}</button></div>
         </form>
       </div>
+
+      {/* Fora dos <form> de propósito: o cropper tem <button> e <input file>, que
+          dentro de um form disparariam o submit. */}
+      {showCropper && (
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowCropper(false); }}>
+          <div className="modal" style={{ maxWidth: 480 }}>
+            <h3>Ajustar foto de perfil</h3>
+            {/* `canReopenInCropper`: só reabrimos foto que já é data URL — um avatar
+                da galeria tingiria o canvas (ver cropMath.js). */}
+            <PhotoCropper
+              onCrop={handleCropDone}
+              onCancel={() => setShowCropper(false)}
+              initialImage={canReopenInCropper(photo) ? photo : undefined}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

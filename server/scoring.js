@@ -17,4 +17,29 @@ function finalScoreFromCriteria(criteria) {
   return Math.round((sum / base) * 100);
 }
 
-module.exports = { finalScoreFromCriteria };
+// Separa o JSON comparativo do duelo (chaves A1..A6 / B1..B6) nas notas de cada
+// aluno e calcula a nota final 0–100 de cada um. Retorna também o vencedor.
+// Retorna null se não der pra montar as duas notas.
+function comparativeScores(criteria) {
+  if (!criteria || typeof criteria !== 'object') return null;
+  const a = {};
+  const b = {};
+  for (const [k, v] of Object.entries(criteria)) {
+    const m = /^([AB])\s*0*(\d+)$/i.exec(String(k).trim());
+    if (!m) continue;
+    const n = Number(String(v).replace(',', '.'));
+    if (!Number.isFinite(n)) continue;
+    if (m[1].toUpperCase() === 'A') a[m[2]] = n;
+    else b[m[2]] = n;
+  }
+  const scoreA = finalScoreFromCriteria(a);
+  const scoreB = finalScoreFromCriteria(b);
+  if (scoreA === null || scoreB === null) return null;
+  let winner;
+  if (scoreA > scoreB) winner = 'A';
+  else if (scoreB > scoreA) winner = 'B';
+  else winner = 'draw';
+  return { criteriaA: a, criteriaB: b, scoreA, scoreB, winner };
+}
+
+module.exports = { finalScoreFromCriteria, comparativeScores };

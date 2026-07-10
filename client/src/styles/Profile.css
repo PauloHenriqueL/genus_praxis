@@ -1,0 +1,120 @@
+/* =====================================================================
+   Profile.css — conquistas, seletor de título e galeria de avatares.
+   Tudo escopado sob .profile-page (as classes de conquista existem também
+   em Missoes.css, escopadas sob .missoes-page — não colidem).
+   ===================================================================== */
+
+.profile-page .profile-achievements {
+  margin-bottom: 22px;
+}
+
+/* --- Constância (streak) --- */
+.profile-page .streak-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  margin-bottom: 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-soft);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.profile-page .streak-badge .badge-flame {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+.profile-page .streak-badge.weekly {
+  color: var(--orange);
+  background: rgba(255, 98, 0, 0.1);
+  border-color: var(--border-orange);
+}
+.profile-page .streak-badge.monthly {
+  color: var(--orange);
+  background: rgba(255, 98, 0, 0.18);
+  border-color: var(--orange);
+}
+.profile-page .streak-badge.weekly .badge-flame,
+.profile-page .streak-badge.monthly .badge-flame { color: var(--orange); }
+
+/* --- Conquistas desbloqueadas --- */
+.profile-page .profile-badges {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.profile-page .profile-badge {
+  text-align: center;
+  padding: 16px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--border-2);
+}
+.profile-page .profile-badge-icon { font-size: 22px; line-height: 1; margin-bottom: 8px; }
+.profile-page .profile-badge-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.profile-page .profile-badge-date { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+.profile-page .profile-badge.tier-bronze   { border-top-color: #B85A40; }
+.profile-page .profile-badge.tier-silver   { border-top-color: #8a9097; }
+.profile-page .profile-badge.tier-gold     { border-top-color: #c8a04e; }
+.profile-page .profile-badge.tier-platinum { border-top-color: var(--orange); }
+
+/* --- Seletor de título --- */
+.profile-page .profile-title-picker {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+.profile-page .profile-title-picker h4 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.profile-page .title-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.profile-page .title-chip {
+  cursor: pointer;
+  padding: 6px 13px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-soft);
+  background: transparent;
+  border: 1px solid var(--border-2);
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+.profile-page .title-chip:hover:not(:disabled) { transform: translateY(-1px); }
+.profile-page .title-chip:disabled { cursor: default; opacity: 0.55; }
+.profile-page .title-chip.active {
+  color: var(--white);
+  background: rgba(255, 98, 0, 0.16);
+  border-color: var(--orange);
+}
+.profile-page .title-chip.tier-bronze   { color: #d98a6a; border-color: #B85A40; }
+.profile-page .title-chip.tier-silver   { color: #b7bcc4; border-color: #8a9097; }
+.profile-page .title-chip.tier-gold     { color: #d9b45e; border-color: #c8a04e; }
+.profile-page .title-chip.tier-platinum { color: var(--orange); border-color: var(--orange); }
+/* O estado ativo vence a cor do tier. */
+.profile-page .title-chip.active { background: rgba(255, 98, 0, 0.16); }
+
+/* --- Galeria de avatares prontos --- */
+.profile-page .photo-gallery { display: flex; flex-wrap: wrap; gap: 10px; }
+.profile-page .photo-gallery-item {
+  cursor: pointer;
+  padding: 0;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 2px solid var(--border-2);
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+.profile-page .photo-gallery-item:hover { transform: translateY(-2px); }
+.profile-page .photo-gallery-item.active { border-color: var(--orange); }
+.profile-page .photo-gallery-item img { width: 100%; height: 100%; object-fit: cover; display: block; }

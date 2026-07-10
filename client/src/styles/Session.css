@@ -1,0 +1,112 @@
+/* =====================================================================
+   Session.css — telas de sessão de atendimento (ChatSession + EchoSession)
+   =====================================================================
+   Regras:
+   - As classes base do chat (.chat-container, .chat-header, .chat-messages,
+     .chat-message-row, .timer-chip, .session-break, .post-session,
+     .evaluating-orb, .thankyou-block, .start-session-area, .chat-input-area,
+     .icon-btn, .tool-btn, etc.) JÁ existem no index.css — NÃO são redefinidas
+     aqui.
+   - Só adicionamos o que falta. TUDO fica escopado sob `.session-page` para não
+     colidir com as classes de mesmo nome que outros agentes (Progressão,
+     Avaliação, Duelo, Play) definem globalmente em seus próprios CSS.
+   - Cores sempre via variáveis do tema laranja (nunca literal).
+   ===================================================================== */
+
+/* O wrapper .session-page é neutro (herda o layout de .chat-container /
+   .post-session que já vêm do index.css). Serve só de âncora de escopo. */
+.session-page { width: 100%; }
+
+/* EchoSession usa .echo-chat como modificador do .chat-container. No Genus o
+   .chat-container já é flex-column ocupando a altura; aqui só garantimos que a
+   variante freeplay se comporte igual (sem sobrescrever o base). */
+.session-page.echo-chat { display: flex; flex-direction: column; }
+
+/* Header do chat: agrupa o timer + botões à direita. O index.css já tem
+   .chat-header-actions; reforçamos o alinhamento sem redefinir cores. */
+.session-page .chat-header-actions { flex-wrap: wrap; }
+
+/* Tag de dificuldade do exercício (dentro de .chat-status). */
+.session-page .difficulty-tag {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--orange);
+  background: rgba(255, 98, 0, 0.12);
+  border: 1px solid var(--border-orange, rgba(255, 98, 0, 0.35));
+}
+
+/* ------- Resultado de MMR (fim de sessão competitiva) ------- */
+.session-page .mmr-result-card {
+  margin-top: 16px;
+  padding: 16px 18px;
+  border-radius: var(--radius, 14px);
+  border: 1px solid var(--border-orange, rgba(255, 98, 0, 0.35));
+  background: linear-gradient(135deg, rgba(255, 98, 0, 0.10), rgba(53, 0, 92, 0.18));
+}
+.session-page .mmr-result-value {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--font-title, Anton), sans-serif;
+  font-size: 40px;
+  line-height: 1;
+  color: var(--text);
+  margin-top: 4px;
+}
+.session-page .mmr-delta {
+  font-family: var(--font-body), sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+}
+.session-page .mmr-delta.up { color: var(--success); }
+.session-page .mmr-delta.down { color: var(--danger); }
+.session-page .mmr-result-note {
+  margin: 8px 0 0;
+  font-size: 13.5px;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+/* ------- Bloco de avaliação para PROFESSOR/ADMIN ------- */
+/* Raciocínio bruto do avaliador (colapsável). Só renderizado p/ supervisor/admin. */
+.session-page .supervisor-reasoning {
+  margin-top: 16px;
+  border: 1px dashed var(--border-2, rgba(255, 255, 255, 0.14));
+  border-radius: var(--radius-sm, 9px);
+  padding: 10px 14px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+.session-page .supervisor-reasoning > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--text-soft);
+  list-style: none;
+  user-select: none;
+}
+.session-page .supervisor-reasoning > summary::-webkit-details-marker { display: none; }
+.session-page .supervisor-reasoning > summary::before {
+  content: '▸ ';
+  color: var(--orange);
+}
+.session-page .supervisor-reasoning[open] > summary::before { content: '▾ '; }
+.session-page .supervisor-reasoning-body {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.session-page .section-sub {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-muted, var(--text-soft));
+}

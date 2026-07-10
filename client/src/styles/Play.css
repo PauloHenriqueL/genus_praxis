@@ -1,0 +1,67 @@
+/* Play.css — classes compartilhadas por FreePlay.jsx e Competitive.jsx
+   Portado de all_os/client/src/index.css, convertido ao tema laranja do Genus. */
+
+/* Selo de dificuldade dinâmica do personagem (vem do MMR) */
+.character-card .difficulty-tag {
+  display: inline-block;
+  margin-top: 14px;
+  padding: 4px 12px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  background: rgba(255, 98, 0, 0.1);
+  color: var(--orange);
+  border: 1px solid var(--border-orange);
+}
+.character-card .difficulty-tag strong { font-size: 13px; letter-spacing: 0; }
+
+/* Pílula genérica de rótulo */
+.tag-pill {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  font-weight: 500;
+  background: rgba(255, 98, 0, 0.1);
+  color: var(--orange);
+  border: 1px solid var(--border-orange);
+}
+
+/* Cartão de MMR do modo competitivo */
+.duel-mmr-card {
+  text-align: center;
+  padding: 22px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.mmr-result-value {
+  font-family: var(--font-title, inherit);
+  font-size: 40px;
+  line-height: 1;
+  color: var(--orange);
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.mmr-result-note { font-size: 13px; color: var(--text-soft); margin: 0; }
+
+/* Cabeçalhos de seção */
+.section-heading {
+  font-family: var(--font-title, inherit);
+  font-size: 22px;
+  color: var(--orange);
+  margin: 28px 0 8px;
+}
+.section-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-bottom: 16px;
+}
+
+/* Spinner pequeno */
+.spinner-sm { width: 14px; height: 14px; border-width: 2px; }

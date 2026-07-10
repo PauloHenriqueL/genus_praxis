@@ -1,0 +1,156 @@
+/* Progression.css — Progressão (reatendimento + avaliação de evolução).
+   Tema laranja do Genus. Importado por pages/Progression.jsx e
+   components/ProgressionChat.jsx. Tudo escopado sob .progression-page
+   para não colidir com classes genéricas (.assistant, .active, .error,
+   .evaluation-*, .scores-grid, .score-item, .echo-chat).
+   NÃO redefine .progression-tag (já existe no index.css). */
+
+/* ---- Tela de resultado / bloco de avaliação ---- */
+.progression-page .progression-result,
+.progression-page .chat-evaluation-display {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.progression-page .progression-evaluation,
+.progression-page .evaluation-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.progression-page .progression-text,
+.progression-page .evaluation-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.65;
+  font-size: 14.5px;
+  color: var(--text);
+}
+
+.progression-page .chat-evaluation-display {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  box-shadow: var(--shadow);
+}
+
+/* ---- Notas por critério ---- */
+.progression-page .progression-scores h3,
+.progression-page .evaluation-scores h3 {
+  font-size: 15px;
+  color: var(--text-soft);
+  margin-bottom: 12px;
+}
+
+.progression-page .scores-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.progression-page .score-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.progression-page .score-item span {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.progression-page .score-item strong {
+  font-size: 16px;
+  color: var(--orange);
+  font-weight: 700;
+}
+
+/* ---- Ações ---- */
+.progression-page .progression-actions,
+.progression-page .evaluation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* ---- Chat de reatendimento ---- */
+.progression-page .echo-chat {
+  display: flex;
+  flex-direction: column;
+}
+
+.progression-page .elapsed-time {
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  color: var(--text-soft);
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+}
+
+.progression-page .chat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+/* Confirmação de finalizar */
+.progression-page .confirm-box {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-orange);
+  background: rgba(255, 98, 0, 0.06);
+}
+.progression-page .confirm-box p {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  color: var(--text-soft);
+}
+
+/* "está digitando…" — animação de reticências */
+.progression-page .transcribing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-soft);
+}
+
+.progression-page .spinner-sm {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-2);
+  border-top-color: var(--orange);
+  border-radius: 50%;
+  animation: progression-spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+@keyframes progression-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Reticências pulsantes do "digitando" */
+.progression-page .delayed {
+  animation: progression-blink 1.2s infinite both;
+}
+.progression-page .delay-1 { animation-delay: 0.2s; }
+.progression-page .delay-2 { animation-delay: 0.4s; }
+
+@keyframes progression-blink {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}

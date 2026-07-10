@@ -1,0 +1,72 @@
+/* Logs.css — selos de tipo/modo/dificuldade dos logs (campos novos vindos do
+   backend portado do All_OS). Tema laranja do Genus. SEM neuro. */
+
+.log-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 6px;
+}
+
+.log-type-badge,
+.log-mode-badge,
+.log-diff-badge,
+.log-skill-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+
+/* Tipo: Trilha (exercise) x Simulação (freeplay). */
+.log-type-badge {
+  background: rgba(255, 98, 0, 0.1);
+  color: var(--orange);
+  border: 1px solid var(--border-orange);
+}
+.log-type-freeplay {
+  background: rgba(122, 52, 184, 0.14);
+  color: var(--purple-light);
+  border-color: rgba(122, 52, 184, 0.4);
+}
+
+/* Modo: Competitivo (alimenta MMR) x Treino. */
+.log-mode-badge {
+  border: 1px solid var(--border-2);
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.03);
+}
+.log-mode-competitive {
+  background: rgba(255, 176, 32, 0.14);
+  color: var(--warn);
+  border-color: rgba(255, 176, 32, 0.4);
+}
+
+/* Dificuldade (só exercícios). */
+.log-diff-badge {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+/* Competência treinada (só exercícios da trilha). Nome longo — não caixa alta. */
+.log-skill-badge {
+  background: rgba(122, 52, 184, 0.1);
+  color: var(--purple-light);
+  border: 1px solid rgba(122, 52, 184, 0.32);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+}

@@ -34,6 +34,21 @@ export default function Login({ onLogin }) {
     }
   }
 
+  // Sessão temporária, sem cadastro. O visitante não pontua (fica fora de
+  // ranking, MMR, notificações) e não abre duelos — só entra por convite.
+  async function handleVisitor() {
+    setError('');
+    setLoading(true);
+    try {
+      const user = await api.loginVisitor();
+      onLogin(user);
+    } catch (err) {
+      setError(err.message || 'Não foi possível entrar como visitante.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="login-container">
       <div className="login-card">
@@ -57,6 +72,20 @@ export default function Login({ onLogin }) {
             {loading ? 'Entrando…' : 'Entrar'}
           </button>
         </form>
+
+        {/* Visitante depende do backend (POST /api/login/visitor); no modo
+            demonstração não existe servidor, então o botão não aparece. */}
+        {!DEMO && (
+          <div className="login-visitor">
+            <div className="login-divider"><span>ou</span></div>
+            <button type="button" className="btn btn-outline" onClick={handleVisitor} disabled={loading}>
+              Entrar como visitante
+            </button>
+            <p className="login-visitor-note">
+              Sessão temporária para conhecer a plataforma. Não guarda progresso nem entra no ranking.
+            </p>
+          </div>
+        )}
 
         {DEMO && (
           <div className="login-demo">

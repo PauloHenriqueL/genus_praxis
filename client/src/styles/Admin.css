@@ -1,0 +1,136 @@
+/* =====================================================================
+   Admin.css — classes compartilhadas por AdminExercises, AdminFreeplay
+   e AdminEntrevistador. Convertidas do All_OS ao tema laranja do Genus.
+   Classes genéricas (.danger/.primary/.active) escopadas sob .admin-page.
+   ===================================================================== */
+
+/* Pílula de competência / tag na tabela de exercícios */
+.tag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--orange);
+  background: rgba(255, 98, 0, 0.1);
+  border: 1px solid var(--border-orange);
+  white-space: nowrap;
+}
+
+/* Pílula de dificuldade */
+.difficulty-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.difficulty-pill.difficulty-iniciante {
+  color: #74e2a8;
+  background: rgba(46, 199, 122, 0.12);
+  border-color: rgba(46, 199, 122, 0.32);
+}
+.difficulty-pill.difficulty-intermediario {
+  color: var(--warn);
+  background: rgba(255, 176, 32, 0.12);
+  border-color: rgba(255, 176, 32, 0.34);
+}
+.difficulty-pill.difficulty-avancado {
+  color: #ff8f98;
+  background: rgba(255, 92, 106, 0.12);
+  border-color: rgba(255, 92, 106, 0.34);
+}
+
+/* Marca "customizado / padrão" na coluna do avaliador */
+.eval-flag { color: var(--text); font-size: 13px; }
+.eval-flag.default { color: var(--text-muted); font-style: italic; }
+
+/* =====================================================================
+   AdminEntrevistador — visualização (leitura) do prompt
+   ===================================================================== */
+.prompt-view {
+  margin-top: 4px;
+}
+.prompt-view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.prompt-view-toolbar .meta {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.prompt-pre {
+  margin: 0;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 20px 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2);
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text-soft);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* =====================================================================
+   Escopo de classes genéricas sob .admin-page (evita colisão global)
+   ===================================================================== */
+.admin-page .copied {
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* =====================================================================
+   Entrevistador — chat de construção de personagem
+   ===================================================================== */
+
+/* Barra de ações do cabeçalho: quebra linha no mobile em vez de estourar. */
+.admin-page .entrevistador-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* O .chat-container global ocupa a viewport inteira; aqui ele divide o espaço
+   com o cabeçalho da página, então encolhemos e damos moldura de card. */
+.admin-page .entrevistador-chat {
+  height: auto;
+  min-height: 420px;
+  max-height: calc(100vh - 280px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 0 14px;
+}
+@supports (height: 100dvh) {
+  .admin-page .entrevistador-chat { max-height: calc(100dvh - 280px); }
+}
+
+/* Textareas que exibem prompt bruto: monoespaçado, com scroll próprio.
+   `pre-wrap` (e não `pre`) porque as linhas do prompt são longas e empurrariam
+   a página inteira para fora da tela no celular. */
+.admin-page .mono-area {
+  min-height: 260px;
+  max-width: 100%;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+}
+.admin-page .mono-area.short { min-height: 150px; }

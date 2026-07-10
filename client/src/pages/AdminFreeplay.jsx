@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react';
 import { api, assetUrl } from '../api';
 import Typewriter from '../components/Typewriter';
 import PhotoPicker from '../components/PhotoPicker';
+import '../styles/Admin.css';
 
-const EMPTY_FORM = { name: '', age: '', description: '', specificInstruction: '', evaluationCriteria: '' };
+const EMPTY_FORM = { name: '', age: '', description: '', assistantId: '', specificInstruction: '', evaluationCriteria: '' };
 
-export default function AdminCharacters() {
+export default function AdminFreeplay() {
   const [characters, setCharacters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -20,7 +21,7 @@ export default function AdminCharacters() {
 
   function load() {
     setLoading(true);
-    api.getCharacters()
+    api.getFreeplay()
       .then(setCharacters)
       .catch((err) => setError(err.message || 'Erro ao carregar personagens'))
       .finally(() => setLoading(false));
@@ -29,11 +30,13 @@ export default function AdminCharacters() {
 
   function resetPhoto() { setPhotoData(null); setPhotoCleared(false); setCurrentPhotoUrl(null); }
   function openCreate() { setForm(EMPTY_FORM); setEditingId(null); setFormError(''); resetPhoto(); setShowModal(true); }
+
   function openEdit(c) {
     setForm({
       name: c.name || '',
       age: c.age != null ? String(c.age) : '',
       description: c.description || '',
+      assistantId: c.assistantId || '',
       specificInstruction: c.specificInstruction || '',
       evaluationCriteria: c.evaluationCriteria || '',
     });
@@ -42,8 +45,13 @@ export default function AdminCharacters() {
     setCurrentPhotoUrl(assetUrl(c.photoIcon) || null);
     setShowModal(true);
   }
+
   function closeModal() { setShowModal(false); setEditingId(null); setForm(EMPTY_FORM); setFormError(''); resetPhoto(); }
-  function handleChange(e) { const { name, value } = e.target; setForm((p) => ({ ...p, [name]: value })); }
+
+  function handleChange(e) {
+    const { name, value } = e.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -52,10 +60,11 @@ export default function AdminCharacters() {
     try {
       const payload = { ...form, age: form.age !== '' ? Number(form.age) : null };
       let charId = editingId;
-      if (editingId) await api.updateCharacter(editingId, payload);
-      else { const created = await api.createCharacter(payload); charId = created.id; }
-      if (photoData) await api.setCharacterPhoto(charId, { icon: photoData.iconDataUrl, full: photoData.fullDataUrl });
-      else if (photoCleared) await api.setCharacterPhoto(charId, { clear: true });
+      if (editingId) await api.updateFreeplay(editingId, payload);
+      else { const created = await api.createFreeplay(payload); charId = created.id; }
+      // No Genus a foto é rota separada (PUT /api/freeplay/:id/photo).
+      if (photoData) await api.setFreeplayPhoto(charId, { icon: photoData.iconDataUrl, full: photoData.fullDataUrl });
+      else if (photoCleared) await api.setFreeplayPhoto(charId, { clear: true });
       closeModal();
       load();
     } catch (err) {
@@ -67,17 +76,17 @@ export default function AdminCharacters() {
 
   async function handleDelete(c) {
     if (!window.confirm(`Excluir o personagem "${c.name}"?`)) return;
-    try { await api.deleteCharacter(c.id); load(); }
+    try { await api.deleteFreeplay(c.id); load(); }
     catch (err) { setError(err.message || 'Erro ao excluir'); }
   }
 
   return (
-    <div>
+    <div className="admin-page">
       <div className="page-header with-action">
         <div>
           <div className="eyebrow">Administração · Simulação</div>
-          <h2><Typewriter text="Criação de " /><span className="accent"><Typewriter text="Personagens" delayStart={620} /></span></h2>
-          <p>Cadastre os pacientes simulados que aparecerão na biblioteca de Simulação.</p>
+          <h2><Typewriter text="Personagens da " /><span className="accent"><Typewriter text="Simulação" delayStart={620} /></span></h2>
+          <p>Cadastre os pacientes simulados que aparecerão na biblioteca de Simulação para os alunos.</p>
         </div>
         <button className="btn btn-primary" onClick={openCreate}>+ Novo Personagem</button>
       </div>
@@ -91,13 +100,18 @@ export default function AdminCharacters() {
       ) : (
         <div className="card tight" style={{ padding: 0, overflow: 'auto' }}>
           <table className="admin-table">
-            <thead><tr><th>Nome</th><th>Idade</th><th>Descrição</th><th>Ações</th></tr></thead>
+            <thead>
+              <tr><th>Nome</th><th>Idade</th><th>Dificuldade</th><th>Descrição</th><th>Ações</th></tr>
+            </thead>
             <tbody>
               {characters.map((c) => (
                 <tr key={c.id}>
                   <td style={{ fontWeight: 600, color: 'var(--text)' }}>{c.name}</td>
                   <td>{c.age != null ? `${c.age} anos` : '—'}</td>
-                  <td style={{ color: 'var(--text-soft)', maxWidth: 420 }}>
+                  <td title={`Dificuldade do MMR (1–100) · ${c.competitiveMatches || 0} partida(s) competitiva(s)`}>
+                    <strong>{Number.isFinite(c.difficulty) ? c.difficulty : '—'}</strong>
+                  </td>
+                  <td style={{ color: 'var(--text-soft)', maxWidth: 380 }}>
                     <span className="clamp-2">{c.description}</span>
                   </td>
                   <td>
@@ -141,21 +155,28 @@ export default function AdminCharacters() {
                 <input id="description" name="description" value={form.description} onChange={handleChange} placeholder="Apresentação curta para o aluno" />
               </div>
               <div>
+                <label htmlFor="assistantId">OpenAI Assistant ID <em className="opt">(opcional)</em></label>
+                <input id="assistantId" name="assistantId" value={form.assistantId} onChange={handleChange} placeholder="asst_xxxxxxxxxxxxxxxxxxxxxxxxxx" />
+                <small className="field-hint">
+                  Cole apenas o ID começando com <code>asst_</code>. Se vazio, usa a instrução abaixo via chat completion.
+                </small>
+              </div>
+              <div>
                 <label htmlFor="specificInstruction">Instrução específica (prompt da IA)</label>
-                <textarea id="specificInstruction" name="specificInstruction" value={form.specificInstruction} onChange={handleChange}
-                  placeholder="História, traços de personalidade, queixa, forma de se expressar…" style={{ minHeight: 180 }} />
+                <textarea id="specificInstruction" name="specificInstruction" value={form.specificInstruction} onChange={handleChange} placeholder="História, traços de personalidade, queixa, forma de se expressar… (usado quando não há Assistant ID)" style={{ minHeight: 180 }} />
                 <small className="field-hint">Descreve quem é o paciente. Não aparece para o aluno — vai apenas para a IA que encarna o personagem.</small>
               </div>
               <div>
                 <label htmlFor="evaluationCriteria">Critério de correção <em className="opt">(gabarito do avaliador — opcional)</em></label>
-                <textarea id="evaluationCriteria" name="evaluationCriteria" value={form.evaluationCriteria} onChange={handleChange}
-                  placeholder="Hipóteses corretas, sintomas que o aluno deve identificar, condutas esperadas…" style={{ minHeight: 140 }} />
-                <small className="field-hint">Não aparece para o aluno. Fica pronto para o avaliador (quando ligado): é injetado junto do log, server-side.</small>
+                <textarea id="evaluationCriteria" name="evaluationCriteria" value={form.evaluationCriteria} onChange={handleChange} placeholder="Hipóteses corretas, sintomas que o aluno deve identificar, condutas esperadas, red flags… (não aparece para o aluno; vai apenas para o avaliador junto com o log)" style={{ minHeight: 160 }} />
+                <small className="field-hint">Texto descritivo (não imperativo). Não aparece para o aluno: é injetado junto do log, server-side, quando o avaliador está ligado.</small>
               </div>
               {formError && <div className="alert error">{formError}</div>}
               <div className="modal-actions">
                 <button type="button" className="btn btn-outline" onClick={closeModal} disabled={saving}>Cancelar</button>
-                <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Salvando…' : editingId ? 'Salvar Alterações' : 'Criar Personagem'}</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>
+                  {saving ? 'Salvando…' : editingId ? 'Salvar Alterações' : 'Criar Personagem'}
+                </button>
               </div>
             </form>
           </div>

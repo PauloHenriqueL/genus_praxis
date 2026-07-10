@@ -27,7 +27,7 @@ const STEPS = [
 export default function Home({ user }) {
   const navigate = useNavigate();
   return (
-    <div className="home-page">
+    <div>
       <div className="home-banner">
         <img src={`${import.meta.env.BASE_URL}banner.jpeg`} alt="Cada psicólogo é uma esfera de potencial ilimitado" />
       </div>
@@ -43,7 +43,7 @@ export default function Home({ user }) {
           treinar escuta, presença e condução — no seu ritmo, quantas sessões precisar.
         </p>
         <div className="ornament" />
-        <button className="btn btn-primary btn-lg home-cta" onClick={() => navigate('/simulacao')}>
+        <button className="btn btn-primary btn-lg home-cta" onClick={() => navigate('/freeplay')}>
           Jogar simulação →
         </button>
       </section>
@@ -69,7 +69,7 @@ export default function Home({ user }) {
           <div className="home-footer-cta-title">Pronto para começar?</div>
           <div className="home-footer-cta-sub">Escolha um paciente e inicie o seu primeiro atendimento.</div>
         </div>
-        <button className="btn btn-primary" onClick={() => navigate('/simulacao')}>Ir para a Simulação</button>
+        <button className="btn btn-primary" onClick={() => navigate('/freeplay')}>Ir para a Simulação</button>
       </div>
     </div>
   );

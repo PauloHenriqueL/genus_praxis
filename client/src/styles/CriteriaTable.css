@@ -1,0 +1,49 @@
+/* Tabela de notas por critério — tema laranja (Genus Práxis).
+   Só é exibida a professor/admin. */
+
+.criteria-table { margin-bottom: 14px; }
+
+.criteria-table-title {
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.criteria-table-note {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+.criteria-grid {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.criterion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 13.5px;
+  border-bottom: 1px solid var(--border);
+}
+.criterion-item:last-child { border-bottom: none; }
+
+.criterion-label { color: var(--text-soft); }
+
+.criterion-score {
+  font-weight: 600;
+  color: var(--orange);
+  white-space: nowrap;
+}
+.criterion-score-max {
+  color: var(--text-muted);
+  font-weight: 400;
+}

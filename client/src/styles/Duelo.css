@@ -1,0 +1,195 @@
+/* Duelo — estilos compartilhados pelas 4 páginas do cluster de duelo
+   (Duelo, DuelSession, DuelAccept, LogsSociais). Tema laranja do Genus.
+   Classes genéricas (.win/.loss/.draw/.active/.pending/.waiting/.ongoing)
+   são ESCOPADAS sob .duel-page para não colidir com Ranking etc. */
+
+.duel-page { display: block; }
+
+/* --- passos (Duelo) --- */
+.duel-page .duel-steps {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 18px; font-size: 13px; color: var(--text-muted);
+}
+.duel-page .duel-steps span.active { color: var(--orange); font-weight: 700; }
+.duel-page .duel-steps span.done { color: var(--orange-strong); }
+.duel-page .duel-steps-sep { color: var(--border-2); }
+.duel-page .duel-section-title {
+  font-family: var(--font-body); font-size: 15px; font-weight: 600;
+  color: var(--text); margin: 6px 0 14px;
+}
+.duel-page .duel-selected-char {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; margin-bottom: 16px;
+  background: var(--surface-2); border: 1px solid var(--border-orange);
+  border-radius: var(--radius); font-size: 14px; color: var(--text);
+}
+.duel-page .duel-selected-char strong { color: var(--orange); }
+.duel-page .duel-selected-char button { margin-left: auto; }
+
+/* --- modo do duelo --- */
+.duel-page .duel-mode-block { margin-bottom: 18px; }
+.duel-page .duel-mode-toggle {
+  display: inline-flex; border: 1px solid var(--border-2); border-radius: var(--radius);
+  overflow: hidden; background: var(--surface-2);
+}
+.duel-page .duel-mode-toggle button {
+  border: none; background: none; cursor: pointer; font: inherit;
+  padding: 8px 22px; font-size: 14px; font-weight: 600; color: var(--text-soft);
+}
+.duel-page .duel-mode-toggle button.active { background: var(--orange); color: #fff; }
+.duel-page .duel-mode-hint {
+  font-size: 12.5px; color: var(--text-muted);
+  margin: 8px 2px 0; max-width: 560px; line-height: 1.5;
+}
+
+/* --- avatar comum (oponente / grupo social) --- */
+.duel-page .duel-avatar {
+  width: 40px; height: 40px; border-radius: 50%; overflow: hidden;
+  flex-shrink: 0; border: 1px solid var(--border); background: var(--surface-2);
+  display: flex; align-items: center; justify-content: center; color: var(--orange);
+}
+.duel-page .duel-avatar-img { width: 100%; height: 100%; object-fit: cover; }
+.duel-page .duel-avatar-fallback { display: flex; align-items: center; justify-content: center; }
+
+/* --- lista de oponentes --- */
+.duel-page .duel-visitor-card {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; margin-bottom: 18px; flex-wrap: wrap;
+}
+.duel-page .duel-opp-list { display: flex; flex-direction: column; gap: 8px; }
+.duel-page .duel-opp-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 12px 16px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+.duel-page .duel-opp-info { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.duel-page .duel-opp-name { font-weight: 600; color: var(--text); }
+.duel-page .duel-opp-sub { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; }
+.duel-page .duel-opp-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.duel-page .duel-whats-btn { color: var(--success); border-color: rgba(46, 199, 122, 0.4); padding: 6px 10px; }
+.duel-page .duel-whats-btn:hover { background: rgba(46, 199, 122, 0.12); }
+
+/* --- convite despachado --- */
+.duel-page .duel-invite-sent { display: flex; flex-direction: column; gap: 16px; }
+.duel-page .duel-link-row { display: flex; gap: 8px; }
+.duel-page .duel-link-row input {
+  flex: 1; padding: 9px 12px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text-soft);
+}
+.duel-page .duel-confirm-box {
+  background: var(--surface-2); border: 1px solid var(--border-orange);
+  border-radius: var(--radius); padding: 16px;
+}
+.duel-page .duel-confirm-box h4 { margin: 0 0 4px; color: var(--orange); }
+.duel-page .duel-confirm-box p { margin: 0 0 12px; color: var(--text-soft); font-size: 13.5px; }
+
+.duel-page .duel-accept-card { display: flex; flex-direction: column; gap: 14px; }
+
+/* --- aguardando oponente --- */
+.duel-page .duel-waiting-orb { display: inline-flex; align-items: center; justify-content: center; }
+
+/* --- resultado --- */
+.duel-page .duel-result-card { text-align: center; padding: 28px 24px; }
+.duel-page .duel-result-card.win { border-color: var(--orange); box-shadow: var(--shadow); }
+.duel-page .duel-result-card.loss { border-color: var(--danger); }
+.duel-page .duel-outcome { font-family: var(--font-title); font-size: 30px; margin-bottom: 18px; }
+.duel-page .duel-outcome.win { color: var(--orange); }
+.duel-page .duel-outcome.loss { color: var(--danger); }
+.duel-page .duel-outcome.draw { color: var(--text-soft); }
+/* `flex-wrap` + nome truncado: dois nomes longos empurravam a linha para fora
+   da tela no celular. */
+.duel-page .duel-scoreline { display: flex; align-items: center; justify-content: center; gap: 28px; flex-wrap: wrap; }
+.duel-page .duel-score-side { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
+.duel-page .duel-score-name { font-size: 13px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duel-page .duel-score-vs { font-size: 26px; color: var(--border-2); font-family: var(--font-title); }
+
+/* --- MMR no resultado --- */
+.duel-page .duel-mmr-card {
+  text-align: center; display: flex; flex-direction: column;
+  gap: 8px; align-items: center; padding: 18px 20px;
+}
+.duel-page .post-stat-label {
+  font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 500;
+}
+.duel-page .mmr-result-value {
+  font-family: var(--font-title); font-size: 40px; line-height: 1;
+  color: var(--orange); display: flex; align-items: baseline; gap: 12px;
+}
+.duel-page .mmr-delta { font-size: 15px; font-weight: 600; }
+.duel-page .mmr-delta.up { color: var(--success); }
+.duel-page .mmr-delta.down { color: var(--danger); }
+.duel-page .mmr-result-note { font-size: 13px; color: var(--text-soft); margin: 0; }
+
+/* --- análise comparativa --- */
+.duel-page .post-evaluation h4 {
+  font-family: var(--font-title); font-size: 18px; color: var(--orange); margin-bottom: 12px;
+}
+.duel-page .post-evaluation-body { white-space: pre-wrap; line-height: 1.7; color: var(--text-soft); }
+.duel-page .post-session-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+
+/* --- estados da sessão de duelo dentro do chat --- */
+.duel-page .dot.active { background: var(--orange); }
+
+/* =====================================================================
+   LOGS SOCIAIS
+   ===================================================================== */
+.duel-page .social-groups { display: flex; flex-direction: column; gap: 16px; }
+.duel-page .social-group { padding: 16px 18px; }
+.duel-page .social-group-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+/* `min-width:0` deixa o bloco encolher: sem isso um nome longo estica o flex
+   e empurra o cartão para fora da tela no celular. */
+.duel-page .social-group-id { min-width: 0; flex: 1; }
+.duel-page .social-group-name { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duel-page .duel-visitor-tag { color: var(--text-muted); font-weight: 400; font-size: 12.5px; }
+.duel-page .social-group-record { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; }
+.duel-page .rec-w { color: var(--orange); font-weight: 600; }
+.duel-page .rec-l { color: var(--danger); font-weight: 600; }
+.duel-page .rec-d { color: var(--text-soft); font-weight: 600; }
+.duel-page .social-retention-note {
+  font-size: 12.5px; color: var(--text-soft); line-height: 1.5;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px;
+}
+.duel-page .social-duel-list { display: flex; flex-direction: column; gap: 6px; }
+.duel-page .social-duel-row { display: flex; align-items: stretch; gap: 6px; }
+.duel-page .social-duel-open {
+  flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  min-width: 0; text-align: left; font: inherit;
+  padding: 10px 12px; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+  color: var(--text);
+}
+.duel-page .social-duel-open:hover { background: var(--surface-strong); }
+.duel-page .social-duel-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.duel-page .social-duel-char { font-weight: 600; color: var(--text); font-size: 14px; }
+.duel-page .social-duel-date { font-size: 12px; color: var(--text-muted); }
+.duel-page .social-duel-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.duel-page .social-duel-scores { display: inline-flex; align-items: center; gap: 6px; }
+.duel-page .social-duel-scores .vs { color: var(--border-2); }
+.duel-page .social-duel-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.duel-page .social-duel-action {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; align-self: stretch; min-height: 38px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-2); color: var(--text-soft); cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.duel-page .social-duel-action:hover { background: var(--surface-strong); color: var(--text); }
+.duel-page .social-duel-action.danger:hover { background: rgba(255, 92, 106, 0.15); color: var(--danger); border-color: var(--danger); }
+.duel-page .social-duel-action:disabled { opacity: 0.5; cursor: default; }
+
+.duel-page .spinner-sm { width: 14px; height: 14px; border-width: 2px; }
+
+.duel-page .duel-outcome-chip {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  padding: 3px 8px; border-radius: 20px; white-space: nowrap;
+}
+.duel-page .duel-outcome-chip.win { background: rgba(255, 98, 0, 0.18); color: var(--orange); }
+.duel-page .duel-outcome-chip.loss { background: rgba(255, 92, 106, 0.16); color: var(--danger); }
+.duel-page .duel-outcome-chip.draw { background: var(--surface-strong); color: var(--text-soft); }
+.duel-page .duel-outcome-chip.pending { background: var(--surface-strong); color: var(--text-muted); }
+.duel-page .duel-outcome-chip.waiting { background: var(--surface-2); color: var(--orange); }
+.duel-page .duel-outcome-chip.ongoing { background: var(--surface-strong); color: var(--text-soft); }

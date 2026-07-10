@@ -56,42 +56,51 @@ ADMIN_INITIAL_PASSWORD=uma-senha-forte-aqui
 > vez, na criação inicial — depois você pode trocá-la em **Perfil**. Como
 > `server/data/` é ignorado pelo git, num host novo o primeiro boot usa essa env.
 
-## Deploy
+## Deploy — Railway
 
-### Opção A — full-stack (recomendada)
+Um único serviço Node roda o Express, que serve a API **e** o front já buildado
+(`client/dist`). Não existe deploy separado do front.
 
-Um único serviço Node roda o Express, que serve a API **e** o front já buildado.
-Funciona em Railway, Render, Fly, uma VPS, etc.
+O repositório já traz `railway.json` com o build (`npm run build`), o start
+(`npm start`) e o healthcheck (`/api/health`).
 
-```bash
-npm install && npm run build && npm start
-```
+### 1. Criar o serviço
 
-Defina no host: `JWT_SECRET`, `ADMIN_INITIAL_PASSWORD`, `OPENAI_API_KEY` (opcional)
-e um `DATA_DIR` apontando para um volume persistente.
+**New Project → Deploy from GitHub repo** e aponte para este repositório.
+O Railway detecta o Node e usa o `railway.json`.
 
-### Opção B — GitHub Pages (só front)
+### 2. Criar o volume (OBRIGATÓRIO)
 
-O **GitHub Pages hospeda só arquivos estáticos** — não roda o servidor. O workflow
-`.github/workflows/pages.yml` builda e publica o front a cada push na `main`.
+O filesystem do Railway é **efêmero**: sem volume, contas, logs, MMR, duelos e
+fotos de paciente somem a cada deploy.
 
-**Por padrão o build do Pages usa o MODO DEMONSTRAÇÃO** (`VITE_DEMO=1`): o front
-roda 100% no navegador, com dados fictícios em memória e sem backend/IA. É ótimo
-para **mostrar o app** — o login aceita qualquer senha (ou os botões
-Administrador / Professor / Aluno) e dá pra clicar em tudo. Nada é salvo de
-verdade. Site: `https://arthurbpinho.github.io/genus_praxis/`.
+- **Service → Variables → New Volume**, mount path: `/data`
+- Defina a variável `DATA_DIR=/data`
 
-**Para ligar um backend real no Pages** (em vez da demo):
+No primeiro boot o servidor copia `server/seed/` (pacientes + exercícios) para o
+`DATA_DIR`, **sem nunca sobrescrever** um arquivo que já exista lá.
 
-1. Hospede o **backend** num host Node (Opção A, mas com `npm run server`).
-2. **Settings → Pages → Source: GitHub Actions**.
-3. Em **Settings → Secrets and variables → Actions → Variables**, crie
-   `VITE_DEMO` = `0` e `VITE_API_BASE` = URL pública do backend.
-4. No backend, adicione a URL do Pages ao `CORS_ALLOWLIST`
-   (ex.: `https://arthurbpinho.github.io`).
+### 3. Variáveis de ambiente
 
-> Para uso real (dados de verdade, IA), prefira a **Opção A** (full-stack). O
-> Pages serve bem como vitrine/demonstração do front.
+| Variável | Obrigatória | Observação |
+|---|---|---|
+| `JWT_SECRET` | sim | mín. 32 chars. `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+| `DATA_DIR` | sim | `/data` — o mount path do volume |
+| `ADMIN_INITIAL_PASSWORD` | sim (1º boot) | cria só a conta admin. Sem ela, o app cria as contas de DEMONSTRAÇÃO (`admin/admin123`) — **nunca em produção** |
+| `OPENAI_API_KEY` | não | sem ela, simulação/avaliação/entrevistador ficam em modo demonstração |
+| `PORT` | **não defina** | o Railway injeta automaticamente |
+| `CORS_ALLOWLIST` | não | mesma origem: não precisa mexer |
+
+### 4. Conferir
+
+`GET /api/health` responde `200` com `{ ok, dataDir, dataWritable, openai }`.
+Se `dataWritable` for `false`, o volume não está montado — o healthcheck falha
+(503) e o Railway não promove o deploy.
+
+> **Antes do primeiro push**, garanta que os prompts estão versionados:
+> `server/entrevistador/promptentrevistador.md` e `server/avaliacao/*.md`.
+> Eles não estão no `.gitignore`, mas se não forem commitados o entrevistador e
+> os avaliadores de duelo/progressão respondem erro em produção.
 
 ## O que tem
 

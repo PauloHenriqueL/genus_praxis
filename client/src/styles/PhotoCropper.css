@@ -1,0 +1,71 @@
+/* Cropper de foto — tema laranja (Genus Práxis).
+   Portado de all_os/index.css, cores convertidas ao tema escuro/laranja. */
+
+.cropper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.cropper-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 28px 24px;
+  border: 2px dashed var(--border-2);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  text-align: center;
+  color: var(--text-soft);
+  width: 100%;
+}
+.cropper-stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.cropper-stage:active { cursor: grabbing; }
+.cropper-mask {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 9999px rgba(8, 0, 14, 0.62);
+  pointer-events: none;
+  border: 2px solid var(--orange);
+}
+.cropper-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+}
+.cropper-controls input[type="range"] {
+  flex: 1;
+  width: auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+  accent-color: var(--orange);
+}
+.cropper-controls input[type="range"]:focus { box-shadow: none; }
+.cropper-zoom-label {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0;
+}
+.cropper-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  width: 100%;
+  margin-top: 6px;
+}

@@ -69,6 +69,8 @@ body {
 
 h1, h2, h3, h4 { margin: 0; line-height: 1.15; }
 a { color: inherit; text-decoration: none; }
+/* Rede de segurança: nenhuma imagem empurra o layout para fora da tela. */
+img { max-width: 100%; }
 button { font-family: inherit; }
 code { font-family: 'Jost', ui-monospace, monospace; background: rgba(255, 255, 255, 0.07); padding: 1px 6px; border-radius: 5px; font-size: 0.9em; color: var(--orange); }
 ::selection { background: rgba(255, 98, 0, 0.35); color: #fff; }
@@ -148,6 +150,27 @@ code { font-family: 'Jost', ui-monospace, monospace; background: rgba(255, 255, 
 .profile-mini-info { min-width: 0; }
 .profile-mini-name { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .profile-mini-role { font-size: 11.5px; color: var(--text-muted); }
+
+/* Título desbloqueável, sob o nome no menu lateral. O Ranking tem a sua própria
+   versão (escopada em .ranking-page); esta serve a barra lateral. */
+.player-title {
+  display: inline-block;
+  margin: 2px 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  border: 1px solid var(--border-2);
+  color: var(--text-soft);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.player-title.tier-bronze   { color: #d98a6a; border-color: #B85A40; background: rgba(184, 90, 64, 0.12); }
+.player-title.tier-silver   { color: #b7bcc4; border-color: #8a9097; background: rgba(138, 144, 151, 0.14); }
+.player-title.tier-gold     { color: #d9b45e; border-color: #c8a04e; background: rgba(200, 160, 78, 0.16); }
+.player-title.tier-platinum { color: var(--orange); border-color: var(--orange); background: rgba(255, 98, 0, 0.12); }
 
 .main-content { flex: 1; min-width: 0; padding: 40px 46px 64px; max-width: 1180px; margin: 0 auto; width: 100%; }
 
@@ -300,6 +323,13 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 .login-card form { display: flex; flex-direction: column; gap: 15px; text-align: left; }
 .login-card form label { text-align: left; }
 .login-card .btn-primary { margin-top: 6px; }
+/* Entrada como visitante (sessão temporária, sem cadastro). */
+.login-visitor { margin-top: 20px; }
+.login-visitor .btn-outline { width: 100%; }
+.login-divider { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; color: var(--text-muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.14em; }
+.login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.login-visitor-note { font-size: 12px; color: var(--text-muted); margin: 10px 0 0; line-height: 1.5; }
+
 .login-demo { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
 .login-demo-tag { display: inline-block; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--orange); background: rgba(255, 98, 0, 0.1); border: 1px solid var(--border-orange); padding: 3px 10px; border-radius: 999px; margin-bottom: 10px; }
 .login-demo p { font-size: 13px; color: var(--text-soft); margin: 0 0 12px; }
@@ -339,7 +369,13 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
 /* =====================================================================
    Chat (Simulação)
    ===================================================================== */
+/* `dvh` acompanha a barra de endereço do navegador móvel e o teclado virtual;
+   sem ele, o campo de digitação some abaixo da dobra ao focar no celular.
+   O `vh` fica como fallback para navegadores antigos. */
 .chat-container { display: flex; flex-direction: column; height: calc(100vh - 104px); min-height: 480px; }
+@supports (height: 100dvh) {
+  .chat-container { height: calc(100dvh - 104px); }
+}
 .chat-header { display: flex; align-items: center; gap: 14px; padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 8px; flex-wrap: wrap; }
 .chat-title { flex: 1; min-width: 140px; }
 .chat-title h3 { font-size: 18px; color: var(--white); }
@@ -553,6 +589,13 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
   .sidebar {
     position: fixed; top: 0; left: 0; z-index: 90; transform: translateX(-100%);
     transition: transform 0.22s ease; box-shadow: 0 0 60px rgba(0, 0, 0, 0.6);
+    /* Sem isto o drawer herda 100vh e o bloco de perfil/sair fica abaixo da
+       barra de endereço do navegador móvel, inalcançável. */
+    height: 100vh;
+    overflow-y: auto;
+  }
+  @supports (height: 100dvh) {
+    .sidebar { height: 100dvh; }
   }
   .sidebar.open { transform: translateX(0); }
   .mobile-nav-backdrop { display: block; position: fixed; inset: 0; background: rgba(4, 0, 10, 0.6); z-index: 80; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
@@ -561,7 +604,8 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
     display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 70;
     padding: 12px 16px; background: rgba(8, 0, 16, 0.94); border-bottom: 1px solid var(--border); backdrop-filter: blur(8px);
   }
-  .hamburger-btn { background: none; border: none; color: var(--text); cursor: pointer; padding: 4px; display: grid; place-items: center; }
+  /* 44x44 = alvo mínimo de toque (WCAG / Apple HIG); com padding:4px dava ~28px. */
+  .hamburger-btn { background: none; border: none; color: var(--text); cursor: pointer; padding: 4px; display: grid; place-items: center; min-width: 44px; min-height: 44px; margin-left: -10px; }
   .mobile-topbar-logo { flex: 1; display: flex; align-items: center; gap: 8px; font-family: var(--font-title); font-size: 18px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--white); }
   .brand-mark-sm { width: 24px; height: auto; }
   .mobile-topbar-avatar { width: 34px; height: 34px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; background: linear-gradient(135deg, var(--purple), var(--orange-deep)); color: #fff; }
@@ -569,7 +613,14 @@ select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmln
   .main-content { padding: 22px 18px 60px; }
   .page-header h2 { font-size: 32px; }
   .chat-container { height: calc(100vh - 150px); }
+  @supports (height: 100dvh) {
+    .chat-container { height: calc(100dvh - 150px); }
+  }
   .chat-message-row { max-width: 90%; }
+
+  /* iOS dá zoom automático ao focar um campo com fonte < 16px, desalinhando
+     todo o layout. 16px é o mínimo que evita esse comportamento. */
+  input, select, textarea { font-size: 16px; }
 }
 @media (min-width: 821px) {
   .mobile-topbar, .hamburger-btn { display: none; }

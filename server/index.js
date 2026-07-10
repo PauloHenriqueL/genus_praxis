@@ -7,8 +7,10 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const { buildSimulationPrompt, buildDirectEvaluationPrompt } = require('./prompts');
-const { finalScoreFromCriteria } = require('./scoring');
+const { buildExercisePrompt, buildFreeplayPrompt, wrapCustomEvaluatorPrompt } = require('./prompts');
+const { finalScoreFromCriteria, comparativeScores } = require('./scoring');
+const mmrEngine = require('./mmr');
+const { extractBlocos } = require('./entrevistador/blocos');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -46,11 +48,23 @@ app.use(express.json({ limit: '12mb' }));
 
 // --- Persistência (JSON em arquivo) ---
 const SEED_DATA_DIR = path.join(__dirname, 'data');
+// Conteúdo versionado (pacientes e exercícios). `server/data/*.json` está no
+// .gitignore por conter hashes de senha e dados de usuário, então o conteúdo que
+// PRECISA existir num deploy limpo (Railway) mora aqui e é copiado no primeiro boot.
+const SEED_CONTENT_DIR = path.join(__dirname, 'seed');
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : SEED_DATA_DIR;
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (DATA_DIR !== SEED_DATA_DIR && fs.existsSync(SEED_DATA_DIR)) {
-  for (const f of fs.readdirSync(SEED_DATA_DIR)) {
-    const src = path.join(SEED_DATA_DIR, f);
+
+// Copia um seed para o DATA_DIR apenas se o destino ainda não existir — assim um
+// redeploy nunca sobrescreve os dados do volume.
+//
+// Semeamos SÓ o conteúdo versionado (server/seed/). O `server/data/` local NUNCA
+// é copiado para um volume: ele carrega o users.json de desenvolvimento, e sua
+// mera presença no destino faria o bootstrap abaixo pular o ADMIN_INITIAL_PASSWORD
+// — o deploy subiria com as contas de demonstração (admin/admin123).
+if (fs.existsSync(SEED_CONTENT_DIR) && path.resolve(SEED_CONTENT_DIR) !== path.resolve(DATA_DIR)) {
+  for (const f of fs.readdirSync(SEED_CONTENT_DIR)) {
+    const src = path.join(SEED_CONTENT_DIR, f);
     if (!fs.statSync(src).isFile()) continue;
     const dst = path.join(DATA_DIR, f);
     if (!fs.existsSync(dst)) fs.copyFileSync(src, dst);
@@ -61,6 +75,9 @@ if (DATA_DIR !== SEED_DATA_DIR && fs.existsSync(SEED_DATA_DIR)) {
 const PATIENT_PHOTOS_DIR = path.join(DATA_DIR, 'patient-photos');
 if (!fs.existsSync(PATIENT_PHOTOS_DIR)) fs.mkdirSync(PATIENT_PHOTOS_DIR, { recursive: true });
 app.use('/patient-photos', express.static(PATIENT_PHOTOS_DIR, { maxAge: '7d' }));
+// Avatares prontos de perfil (listados por GET /api/profile-photos).
+const PROFILE_ICONS_DIR = path.join(__dirname, '..', 'profiles_icon');
+if (fs.existsSync(PROFILE_ICONS_DIR)) app.use('/profiles_icon', express.static(PROFILE_ICONS_DIR, { maxAge: '7d' }));
 
 // --- JWT ---
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -75,10 +92,35 @@ const BCRYPT_ROUNDS = 10;
 // --- Rate limiting (no-op em testes) ---
 const SKIP_RATE_LIMIT = process.env.NODE_ENV === 'test';
 const noopLimiter = (req, res, next) => next();
-const loginLimiter = SKIP_RATE_LIMIT ? noopLimiter : rateLimit({
-  windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false,
-  message: { error: 'Muitas tentativas. Tente novamente em alguns minutos.' },
+// Login: dois limites em série, com chaves diferentes.
+//
+// A chave NÃO pode ser só o IP: uma turma inteira atrás do NAT da escola compartilha
+// um IP, e o 21º aluno a logar levava 429. Medido: de 30 logins simultâneos, 10 eram
+// barrados. Por isso o limite que importa (força bruta de senha) é POR CONTA.
+//
+//  1. loginAccountLimiter — 10 tentativas ERRADAS / 15 min por username. É o limite
+//     de força bruta: mesmo com IPs rotativos, uma conta só aceita 10 chutes.
+//     `skipSuccessfulRequests` faz o login certo não consumir cota.
+//  2. loginIpLimiter — teto largo por IP, contra enumeração em massa de contas.
+//     200/15min cabe uma turma grande (com erros de digitação) e ainda corta um script.
+const loginAccountLimiter = SKIP_RATE_LIMIT ? noopLimiter : rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => `acct:${String((req.body && req.body.username) || '').trim().toLowerCase() || req.ip}`,
+  message: { error: 'Muitas tentativas para este usuário. Tente novamente em alguns minutos.' },
 });
+const loginIpLimiter = SKIP_RATE_LIMIT ? noopLimiter : rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Muitas tentativas deste endereço. Tente novamente em alguns minutos.' },
+});
+const loginLimiter = [loginIpLimiter, loginAccountLimiter];
+
 function userKey(req) { return (req.user && req.user.id) ? `u:${req.user.id}` : `ip:${req.ip}`; }
 const aiLimiter = SKIP_RATE_LIMIT ? noopLimiter : rateLimit({
   windowMs: 60 * 60 * 1000, max: 400, standardHeaders: true, legacyHeaders: false,
@@ -87,6 +129,11 @@ const aiLimiter = SKIP_RATE_LIMIT ? noopLimiter : rateLimit({
 const writeLimiter = SKIP_RATE_LIMIT ? noopLimiter : rateLimit({
   windowMs: 60 * 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false,
   keyGenerator: userKey, message: { error: 'Limite de operações atingido. Tente novamente mais tarde.' },
+});
+// Sessão de visitante é anônima e gratuita — limita por IP para evitar abuso.
+const visitorLimiter = SKIP_RATE_LIMIT ? noopLimiter : rateLimit({
+  windowMs: 60 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Muitas sessões de visitante. Tente novamente mais tarde.' },
 });
 
 function readJSON(file, fallback = []) {
@@ -154,18 +201,26 @@ if (!fs.existsSync(path.join(DATA_DIR, 'users.json'))) {
   }
 }
 
-// Personagens de simulação de exemplo.
-if (!fs.existsSync(path.join(DATA_DIR, 'characters.json'))) {
-  writeJSON('characters.json', [
-    { id: 'ch1', name: 'Sofia', age: 25, description: 'Jovem com queixas relacionais.', specificInstruction: 'Você é Sofia, 25 anos, designer gráfica. Veio à terapia por dificuldades nos relacionamentos amorosos. Tem um padrão de se apegar rápido e depois sentir que o parceiro não corresponde. Fale de forma expressiva e emotiva.', evaluationCriteria: '' },
-    { id: 'ch2', name: 'Roberto', age: 55, description: 'Homem em crise de meia-idade.', specificInstruction: 'Você é Roberto, 55 anos, contador. Está passando por uma crise existencial: os filhos saíram de casa, sente que o casamento esfriou, questiona suas escolhas de carreira. Fale de forma contida, com dificuldade de expressar emoções.', evaluationCriteria: '' },
-  ]);
-}
+// Personagens: dois tipos, herdados do All_OS.
+//   exercises.json          → Trilha de Competências (skillId 1..5, difficulty)
+//   freeplay-characters.json→ Simulação Livre / Competitivo (paciente completo)
+// Os arquivos de seed acompanham o repositório em server/data/. Estes guards só
+// entram em ação quando DATA_DIR aponta para um volume novo/vazio.
+if (!fs.existsSync(path.join(DATA_DIR, 'exercises.json'))) writeJSON('exercises.json', []);
+if (!fs.existsSync(path.join(DATA_DIR, 'freeplay-characters.json'))) writeJSON('freeplay-characters.json', []);
 
 if (!fs.existsSync(path.join(DATA_DIR, 'logs.json'))) writeJSON('logs.json', []);
 if (!fs.existsSync(path.join(DATA_DIR, 'active-sessions.json'))) writeJSON('active-sessions.json', {});
+if (!fs.existsSync(path.join(DATA_DIR, 'progress.json'))) writeJSON('progress.json', {});
+if (!fs.existsSync(path.join(DATA_DIR, 'achievements.json'))) writeJSON('achievements.json', {});
+if (!fs.existsSync(path.join(DATA_DIR, 'mmr.json'))) writeJSON('mmr.json', { players: {}, characters: {} });
+if (!fs.existsSync(path.join(DATA_DIR, 'duels.json'))) writeJSON('duels.json', []);
+if (!fs.existsSync(path.join(DATA_DIR, 'notifications.json'))) writeJSON('notifications.json', {});
 if (!fs.existsSync(path.join(DATA_DIR, 'settings.json'))) {
-  writeJSON('settings.json', { evaluatorEnabled: process.env.EVALUATOR_ENABLED === 'true' });
+  writeJSON('settings.json', {
+    evaluatorEnabled: process.env.EVALUATOR_ENABLED === 'true',
+    visitorEvaluationEnabled: false,
+  });
 }
 
 // --- Diagnóstico de startup ---
@@ -193,7 +248,10 @@ function publicUser(u) {
   return safe;
 }
 function signToken(user) {
-  return jwt.sign({ sub: user.id, role: user.role, username: user.username }, JWT_SECRET, { expiresIn: TOKEN_TTL });
+  const payload = { sub: user.id, role: user.role, username: user.username };
+  // Visitante não existe em users.json — o token carrega a identidade inteira.
+  if (user.isVisitor || user.role === 'visitor') { payload.isVisitor = true; payload.name = user.name; }
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: TOKEN_TTL });
 }
 function getTokenFromReq(req) {
   const h = req.headers.authorization || '';
@@ -204,6 +262,11 @@ function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Não autenticado' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
+    // Visitante é efêmero: reconstruído do próprio token, sem tocar users.json.
+    if (payload.isVisitor || payload.role === 'visitor') {
+      req.user = { id: payload.sub, username: payload.username, name: payload.name || 'Visitante', role: 'visitor', teacherId: null, isVisitor: true };
+      return next();
+    }
     const user = readJSON('users.json').find((u) => u.id === payload.sub);
     if (!user) return res.status(401).json({ error: 'Sessão inválida' });
     req.user = user;
@@ -220,6 +283,9 @@ function requireRole(...roles) {
   };
 }
 function isAdmin(user) { return !!(user && user.role === 'admin'); }
+// Visitante: usuário efêmero (não existe em users.json). Fica fora de
+// ranking, MMR, notificações e criação de duelos.
+function isVisitor(user) { return !!(user && (user.role === 'visitor' || user.isVisitor)); }
 // Aluno vê o próprio; professor e admin veem todos (aba "Todos os logs").
 function canSeeAllLogs(user) { return !!(user && (user.role === 'admin' || user.role === 'supervisor')); }
 
@@ -233,6 +299,14 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   const ok = user && user.passwordHash ? await bcrypt.compare(String(password), user.passwordHash) : false;
   if (!ok) return res.status(401).json({ error: 'Credenciais inválidas' });
   res.json({ token: signToken(user), user: publicUser(user) });
+});
+
+// Visitante: usuário efêmero, NÃO gravado em users.json. O token carrega tudo.
+// Fica fora de ranking, MMR, notificações e criação de duelos.
+app.post('/api/login/visitor', visitorLimiter, (req, res) => {
+  const id = 'visitor-' + crypto.randomBytes(6).toString('hex');
+  const visitorUser = { id, username: id, name: 'Visitante', role: 'visitor', teacherId: null, isVisitor: true };
+  res.json({ token: signToken(visitorUser), user: visitorUser });
 });
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ user: publicUser(req.user) }));
@@ -430,8 +504,15 @@ app.get('/api/admin/export', requireAuth, requireRole('admin'), (req, res) => {
     exportedBy: req.user.username,
     data: {
       users: readJSON('users.json'),
-      characters: readJSON('characters.json'),
+      exercises: readJSON('exercises.json'),
+      freeplayCharacters: readJSON('freeplay-characters.json'),
+      progress: readJSON('progress.json', {}),
       logs: readJSON('logs.json'),
+      achievements: readJSON('achievements.json', {}),
+      activeSessions: readJSON('active-sessions.json', {}),
+      mmr: readJSON('mmr.json', { players: {}, characters: {} }),
+      duels: readJSON('duels.json', []),
+      notifications: readJSON('notifications.json', {}),
       settings: readJSON('settings.json', {}),
     },
   };
@@ -442,49 +523,419 @@ app.get('/api/admin/export', requireAuth, requireRole('admin'), (req, res) => {
 });
 
 // =====================================================================
-// PERSONAGENS DA SIMULAÇÃO
+// PROFESSOR / SUPERVISOR
 // =====================================================================
-// O cliente (não-admin) recebe só metadados de exibição; specificInstruction e
-// evaluationCriteria (gabarito) NUNCA vão pro cliente — são resolvidos server-side
-// em /api/chat e /api/evaluate.
+// Lista de alunos: admin vê todos; supervisor, só os vinculados a ele.
+app.get('/api/teacher/students', requireAuth, requireRole('supervisor', 'admin'), (req, res) => {
+  const users = readJSON('users.json');
+  const list = isAdmin(req.user)
+    ? users.filter((u) => u.role === 'therapist')
+    : users.filter((u) => u.role === 'therapist' && u.teacherId === req.user.id);
+  res.json(list.map(publicUser));
+});
+
+// =====================================================================
+// GAMIFICAÇÃO — constância, objetivos diários, conquistas e títulos
+// =====================================================================
+// Não há XP nem níveis: a progressão é expressa por streak + conquistas +
+// título selecionável. Tudo é derivado dos logs; só a data de desbloqueio das
+// conquistas é persistida (achievements.json).
+const ACHIEVEMENT_DEFS = [
+  { id: 'first_session',      icon: '◐', title: 'Primeira sessão',       description: 'Concluiu sua primeira sessão na plataforma.',                                   tier: 'bronze' },
+  { id: 'simulacao_complete', icon: '◇', title: 'Repertório clínico',    description: 'Concluiu todos os personagens da Simulação.',                                   tier: 'gold' },
+  { id: 'trilha_skill_1',     icon: '▲', title: 'Hermenêutica plena',    description: 'Concluiu todos os exercícios da competência Hermenêutica.',                     tier: 'silver' },
+  { id: 'trilha_skill_2',     icon: '▲', title: 'Estrutura consolidada', description: 'Concluiu todos os exercícios da competência Estrutura.',                        tier: 'silver' },
+  { id: 'trilha_skill_3',     icon: '▲', title: 'Empatia consolidada',   description: 'Concluiu todos os exercícios da competência Empatia.',                          tier: 'silver' },
+  { id: 'trilha_skill_4',     icon: '▲', title: 'Olho clínico',          description: 'Concluiu todos os exercícios da competência Especificidade do caso.',           tier: 'silver' },
+  { id: 'trilha_skill_5',     icon: '▲', title: 'Autoconhecimento',      description: 'Concluiu todos os exercícios da competência Eu.',                               tier: 'silver' },
+  { id: 'trilha_master',      icon: '◆', title: 'Programa concluído',    description: 'Concluiu todos os exercícios das 5 competências.',                              tier: 'platinum' },
+  { id: 'high_score',         icon: '★', title: 'Excelência técnica',    description: 'Atingiu pontuação ≥ 25 em uma única sessão.',                                   tier: 'gold' },
+  { id: 'speed_demon',        icon: '↗', title: 'Eficiência',            description: 'Concluiu uma sessão em menos de 5 min com pontuação positiva.',                 tier: 'silver' },
+  { id: 'early_bird',         icon: '◔', title: 'Madrugador',            description: 'Realizou uma sessão antes das 7h.',                                             tier: 'bronze' },
+  { id: 'night_owl',          icon: '◑', title: 'Sessão noturna',        description: 'Realizou uma sessão depois das 23h.',                                           tier: 'bronze' },
+  { id: 'centena',            icon: '∞', title: 'Centena',               description: '100 sessões concluídas.',                                                       tier: 'platinum' },
+  { id: 'polivalente',        icon: '◉', title: 'Versatilidade',         description: 'Concluiu uma sessão de trilha e uma de simulação no mesmo dia.',                tier: 'gold' },
+  { id: 'streak_7_ever',      icon: '●', title: 'Constância',            description: 'Manteve constância de 7 dias ao menos uma vez.',                                tier: 'silver' },
+  { id: 'streak_30_ever',     icon: '●', title: 'Persistência',          description: 'Manteve constância de 30 dias ao menos uma vez.',                               tier: 'platinum' },
+  { id: 'highlights_10',      icon: '◎', title: 'Curador',               description: 'Marcou 10 mensagens como destaque em sessões.',                                 tier: 'silver' },
+  { id: 'all_difficulties',   icon: '⊟', title: 'Calibragem',            description: 'Concluiu exercícios das 3 dificuldades (iniciante, intermediário, avançado).',  tier: 'silver' },
+  { id: 'lua_cheia',          icon: '◐', title: 'Amplitude',             description: 'Realizou sessões antes das 7h e depois das 23h em dias diferentes.',            tier: 'gold' },
+];
+
+function dayKey(timestamp) { return new Date(timestamp).toISOString().slice(0, 10); }
+
+function computeStreak(userLogs) {
+  if (!userLogs.length) {
+    return { current: 0, longest: 0, isAlive: false, lastActiveDate: null, status: 'none', daysToWeekly: 7, daysToMonthly: 30 };
+  }
+  const days = new Set(userLogs.map((l) => dayKey(l.timestamp || Date.now())));
+  const today = dayKey(Date.now());
+  const yesterday = dayKey(Date.now() - 86400000);
+
+  let cursor = days.has(today) ? today : (days.has(yesterday) ? yesterday : null);
+  let current = 0;
+  if (cursor) {
+    const d = new Date(cursor + 'T00:00:00Z');
+    while (days.has(d.toISOString().slice(0, 10))) {
+      current++;
+      d.setUTCDate(d.getUTCDate() - 1);
+    }
+  }
+
+  const sorted = [...days].sort();
+  let longest = 0;
+  let run = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    if (i === 0) { run = 1; longest = 1; continue; }
+    const prev = new Date(sorted[i - 1] + 'T00:00:00Z');
+    const cur = new Date(sorted[i] + 'T00:00:00Z');
+    const diff = Math.round((cur - prev) / 86400000);
+    run = diff === 1 ? run + 1 : 1;
+    if (run > longest) longest = run;
+  }
+
+  const status = current >= 30 ? 'monthly' : (current >= 7 ? 'weekly' : (current > 0 ? 'active' : 'none'));
+  return {
+    current,
+    longest,
+    isAlive: days.has(today) || days.has(yesterday),
+    lastActiveDate: sorted[sorted.length - 1] || null,
+    status,
+    daysToWeekly: Math.max(0, 7 - current),
+    daysToMonthly: Math.max(0, 30 - current),
+  };
+}
+
+function computeDailyMissions(userLogs) {
+  const today = dayKey(Date.now());
+  const todayLogs = userLogs.filter((l) => dayKey(l.timestamp) === today);
+  const totalToday = todayLogs.length;
+  const exerciseToday = todayLogs.filter((l) => l.type === 'exercise').length;
+  const fastGood = todayLogs.some((l) => l.type === 'freeplay' && (l.durationSeconds || 9999) <= 600 && (l.score || 0) >= 8);
+
+  return [
+    { id: 'daily_1exercise', icon: '◯', title: 'Sessão diária',  description: 'Conclua 1 exercício hoje (qualquer tipo)',                target: 1, progress: Math.min(totalToday, 1),    completed: totalToday >= 1 },
+    { id: 'daily_2trilha',   icon: '◎', title: 'Foco na trilha', description: 'Conclua 2 exercícios da trilha hoje',                     target: 2, progress: Math.min(exerciseToday, 2), completed: exerciseToday >= 2 },
+    { id: 'daily_efficiency',icon: '↗', title: 'Aclamação',      description: 'Conclua uma Simulação em até 10 min com pontuação ≥ 8',  target: 1, progress: fastGood ? 1 : 0,           completed: fastGood },
+  ];
+}
+
+function computeEarnedAchievements(userLogs, streak, exercises, freeplay) {
+  const exerciseIds = new Set(userLogs.filter((l) => l.type === 'exercise' && l.itemId).map((l) => String(l.itemId)));
+  const freeplayIds = new Set(userLogs.filter((l) => l.type === 'freeplay' && l.itemId).map((l) => String(l.itemId)));
+  const earned = new Set();
+
+  if (userLogs.length >= 1) earned.add('first_session');
+  if (freeplay.length > 0 && freeplay.every((c) => freeplayIds.has(String(c.id)))) earned.add('simulacao_complete');
+
+  for (let s = 1; s <= 5; s++) {
+    const phases = exercises.filter((e) => Number(e.skillId) === s);
+    if (phases.length > 0 && phases.every((p) => exerciseIds.has(String(p.id)))) earned.add(`trilha_skill_${s}`);
+  }
+  if ([1, 2, 3, 4, 5].every((s) => earned.has(`trilha_skill_${s}`))) earned.add('trilha_master');
+
+  if (userLogs.some((l) => Number.isFinite(l.score) && l.score >= 25)) earned.add('high_score');
+  if (userLogs.some((l) => (l.durationSeconds || 9999) < 300 && Number.isFinite(l.score) && l.score > 0)) earned.add('speed_demon');
+
+  let hasEarly = false, hasLate = false;
+  for (const l of userLogs) {
+    const h = new Date(l.timestamp).getHours();
+    if (h < 7) { earned.add('early_bird'); hasEarly = true; }
+    if (h >= 23) { earned.add('night_owl'); hasLate = true; }
+  }
+  if (hasEarly && hasLate) earned.add('lua_cheia');
+
+  if (userLogs.length >= 100) earned.add('centena');
+
+  // Versatilidade: trilha + simulação no MESMO dia (sem neuro).
+  const byDay = {};
+  for (const l of userLogs) {
+    const k = dayKey(l.timestamp);
+    if (!byDay[k]) byDay[k] = new Set();
+    byDay[k].add(l.type);
+  }
+  if (Object.values(byDay).some((s) => s.has('exercise') && s.has('freeplay'))) earned.add('polivalente');
+
+  if (streak.longest >= 7) earned.add('streak_7_ever');
+  if (streak.longest >= 30) earned.add('streak_30_ever');
+
+  let highlights = 0;
+  for (const l of userLogs) {
+    if (Array.isArray(l.messages)) highlights += l.messages.filter((m) => m && m.highlighted).length;
+  }
+  if (highlights >= 10) earned.add('highlights_10');
+
+  const difficultiesDone = new Set(userLogs.filter((l) => l.type === 'exercise' && l.difficulty).map((l) => l.difficulty));
+  if (['iniciante', 'intermediario', 'avancado'].every((d) => difficultiesDone.has(d))) earned.add('all_difficulties');
+
+  return earned;
+}
+
+app.get('/api/gamification/:userId', requireAuth, async (req, res) => {
+  if (!canAccessUser(req.user, req.params.userId)) return res.status(403).json({ error: 'Acesso negado' });
+  const userId = req.params.userId;
+  const userLogs = readJSON('logs.json').filter((l) => l.userId === userId);
+  const exercises = readJSON('exercises.json');
+  const freeplay = readJSON('freeplay-characters.json');
+
+  const streak = computeStreak(userLogs);
+  const dailyMissions = computeDailyMissions(userLogs);
+  const earnedSet = computeEarnedAchievements(userLogs, streak, exercises, freeplay);
+
+  // Persiste a data de desbloqueio das conquistas novas.
+  const ach = await withFileLock('achievements.json', () => {
+    const all = readJSON('achievements.json', {});
+    if (!all[userId]) all[userId] = {};
+    let dirty = false;
+    for (const id of earnedSet) {
+      if (!all[userId][id]) { all[userId][id] = new Date().toISOString(); dirty = true; }
+    }
+    if (dirty) writeJSON('achievements.json', all);
+    return all;
+  });
+
+  const achievements = ACHIEVEMENT_DEFS.map((def) => ({
+    ...def,
+    earned: earnedSet.has(def.id),
+    earnedAt: (ach[userId] && ach[userId][def.id]) || null,
+  }));
+
+  const validScores = userLogs.map((l) => l.score).filter((s) => Number.isFinite(s));
+  const stats = {
+    totalSessions: userLogs.length,
+    totalExercise: userLogs.filter((l) => l.type === 'exercise').length,
+    totalFreeplay: userLogs.filter((l) => l.type === 'freeplay').length,
+    averageScore: validScores.length ? Math.round(validScores.reduce((a, b) => a + b, 0) / validScores.length) : null,
+    bestScore: validScores.length ? Math.max(...validScores) : null,
+  };
+
+  res.json({ streak, dailyMissions, achievements, stats });
+});
+
+// Título exibido no perfil/ranking. Revalida a posse server-side: o cliente
+// nunca decide qual título possui.
+app.post('/api/me/title', requireAuth, async (req, res) => {
+  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não possui títulos.' });
+  const titleId = req.body && req.body.titleId ? String(req.body.titleId) : '';
+
+  if (titleId) {
+    const userLogs = readJSON('logs.json').filter((l) => l.userId === req.user.id);
+    const streak = computeStreak(userLogs);
+    const earned = computeEarnedAchievements(userLogs, streak, readJSON('exercises.json'), readJSON('freeplay-characters.json'));
+    if (!earned.has(titleId)) return res.status(403).json({ error: 'Você ainda não desbloqueou esse título.' });
+  }
+
+  const updated = await withFileLock('users.json', () => {
+    const users = readJSON('users.json');
+    const idx = users.findIndex((u) => u.id === req.user.id);
+    if (idx === -1) return null;
+    if (titleId) users[idx].activeTitle = titleId;
+    else delete users[idx].activeTitle;
+    writeJSON('users.json', users);
+    return users[idx];
+  });
+  if (!updated) return res.status(404).json({ error: 'Usuário não encontrado' });
+  res.json(publicUser(updated));
+});
+
+// =====================================================================
+// RANKING + MMR
+// =====================================================================
+function readMmr() { return readJSON('mmr.json', { players: {}, characters: {} }); }
+function titleOf(user) {
+  if (!user || !user.activeTitle) return null;
+  const def = ACHIEVEMENT_DEFS.find((a) => a.id === user.activeTitle);
+  return def ? { id: def.id, title: def.title, tier: def.tier } : null;
+}
+
+app.get('/api/ranking', requireAuth, (req, res) => {
+  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não acessa o ranking.' });
+  const store = readMmr();
+  const users = readJSON('users.json');
+
+  const rows = users
+    .filter((u) => store.players[u.id] && store.players[u.id].n > 0)
+    .map((u) => {
+      const view = mmrEngine.playerView(store.players[u.id]);
+      return {
+        userId: u.id,
+        name: u.name,
+        role: u.role,
+        profilePhoto: u.profilePhoto || '',
+        title: titleOf(u),
+        mmr: view.mmr,
+        calibrating: view.calibrating,
+        matchesRemaining: view.matchesRemaining,
+        matches: view.n,
+      };
+    })
+    .sort((a, b) => {
+      if (a.calibrating !== b.calibrating) return a.calibrating ? 1 : -1; // calibrando vai pro fim
+      return (b.mmr ?? -1) - (a.mmr ?? -1);
+    });
+
+  res.json(rows);
+});
+
+app.get('/api/me/mmr', requireAuth, (req, res) => {
+  if (isVisitor(req.user)) {
+    return res.json({ n: 0, calibrating: true, matchesRemaining: mmrEngine.CALIBRATION_MATCHES, mmr: null, visitor: true });
+  }
+  const store = readMmr();
+  res.json(mmrEngine.playerView(store.players[req.user.id]));
+});
+
+// Reset do ranking (admin): zera as notas dos logs e o progresso da trilha, mas
+// PRESERVA os logs e o mmr.json — o rating competitivo sobrevive ao reset.
+app.post('/api/admin/ranking/reset', requireAuth, requireRole('admin'), async (req, res) => {
+  await withFileLock('logs.json', () => {
+    const logs = readJSON('logs.json').map((l) => ({ ...l, score: null, criteriaScores: null }));
+    writeJSON('logs.json', logs);
+  });
+  await withFileLock('progress.json', () => writeJSON('progress.json', {}));
+  res.json({ ok: true });
+});
+
+// =====================================================================
+// NOTIFICAÇÕES (in-app: convite e resultado de duelo)
+// =====================================================================
+const NOTIF_MAX_PER_USER = 100;
+
+function pushNotification(userId, notif) {
+  if (!userId || String(userId).startsWith('visitor-')) return; // visitante não recebe
+  return withFileLock('notifications.json', () => {
+    const all = readJSON('notifications.json', {});
+    const list = all[userId] || [];
+    list.unshift({
+      id: 'n' + Date.now() + '-' + crypto.randomBytes(3).toString('hex'),
+      createdAt: new Date().toISOString(),
+      read: false,
+      ...notif,
+    });
+    all[userId] = list.slice(0, NOTIF_MAX_PER_USER);
+    writeJSON('notifications.json', all);
+  });
+}
+
+app.get('/api/notifications', requireAuth, (req, res) => {
+  if (isVisitor(req.user)) return res.json({ items: [], unread: 0 });
+  const all = readJSON('notifications.json', {});
+  const items = all[req.user.id] || [];
+  res.json({ items, unread: items.filter((n) => !n.read).length });
+});
+
+app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
+  if (isVisitor(req.user)) return res.json({ ok: true });
+  await withFileLock('notifications.json', () => {
+    const all = readJSON('notifications.json', {});
+    const list = all[req.user.id] || [];
+    const n = list.find((x) => x.id === req.params.id);
+    if (n) { n.read = true; all[req.user.id] = list; writeJSON('notifications.json', all); }
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
+  if (isVisitor(req.user)) return res.json({ ok: true });
+  await withFileLock('notifications.json', () => {
+    const all = readJSON('notifications.json', {});
+    all[req.user.id] = (all[req.user.id] || []).map((n) => ({ ...n, read: true }));
+    writeJSON('notifications.json', all);
+  });
+  res.json({ ok: true });
+});
+
+// =====================================================================
+// PERSONAGENS — dois tipos: exercícios (trilha) e freeplay (simulação)
+// =====================================================================
+// O cliente (não-admin) recebe só metadados de exibição; specificInstruction,
+// evaluationCriteria e evaluatorPrompt (gabaritos) NUNCA vão pro cliente — são
+// resolvidos server-side em /api/chat e /api/evaluate.
 function publicCharacter(c) {
-  const { specificInstruction, evaluationCriteria, ...safe } = c;
+  const { specificInstruction, evaluationCriteria, evaluatorPrompt, ...safe } = c;
   return safe;
 }
-const CHARACTER_FIELDS = ['name', 'age', 'description', 'specificInstruction', 'evaluationCriteria'];
+const FREEPLAY_FIELDS = ['name', 'age', 'description', 'assistantId', 'specificInstruction', 'evaluationCriteria'];
+const EXERCISE_FIELDS = ['skillId', 'title', 'description', 'difficulty', 'specificInstruction', 'evaluatorPrompt'];
 function pickFields(body, fields) {
   const out = {};
   for (const f of fields) if (body && Object.prototype.hasOwnProperty.call(body, f)) out[f] = body[f];
   return out;
 }
 
-app.get('/api/characters', requireAuth, (req, res) => {
-  const list = readJSON('characters.json');
-  res.json(list.map((c) => (isAdmin(req.user) ? c : publicCharacter(c))));
-});
-
-app.post('/api/characters', requireAuth, requireRole('admin'), async (req, res) => {
-  const c = await withFileLock('characters.json', () => {
-    const chars = readJSON('characters.json');
-    const created = { id: 'ch' + Date.now() + '-' + crypto.randomBytes(3).toString('hex'), ...pickFields(req.body, CHARACTER_FIELDS) };
-    chars.push(created);
-    writeJSON('characters.json', chars);
-    return created;
+// Fábrica de CRUD: os dois tipos têm exatamente a mesma forma de rota, mudando
+// só o arquivo, o prefixo de id e os campos aceitos.
+function mountCharacterCrud(routePath, file, idPrefix, fields, decorate) {
+  app.get(routePath, requireAuth, (req, res) => {
+    const list = readJSON(file);
+    const shaped = list.map((c) => (isAdmin(req.user) ? c : publicCharacter(c)));
+    res.json(decorate ? decorate(shaped) : shaped);
   });
-  res.json(c);
-});
 
-app.put('/api/characters/:id', requireAuth, requireRole('admin'), async (req, res) => {
-  const result = await withFileLock('characters.json', () => {
-    const chars = readJSON('characters.json');
-    const idx = chars.findIndex((c) => c.id === req.params.id);
-    if (idx === -1) return { status: 404, error: 'Personagem não encontrado' };
-    chars[idx] = { ...chars[idx], ...pickFields(req.body, CHARACTER_FIELDS) };
-    writeJSON('characters.json', chars);
-    return { char: chars[idx] };
+  app.post(routePath, requireAuth, requireRole('admin'), async (req, res) => {
+    const created = await withFileLock(file, () => {
+      const chars = readJSON(file);
+      const c = { id: idPrefix + Date.now() + '-' + crypto.randomBytes(3).toString('hex'), ...pickFields(req.body, fields) };
+      chars.push(c);
+      writeJSON(file, chars);
+      return c;
+    });
+    res.json(created);
   });
-  if (result.error) return res.status(result.status).json({ error: result.error });
-  res.json(result.char);
+
+  app.put(`${routePath}/:id`, requireAuth, requireRole('admin'), async (req, res) => {
+    const result = await withFileLock(file, () => {
+      const chars = readJSON(file);
+      const idx = chars.findIndex((c) => c.id === req.params.id);
+      if (idx === -1) return { status: 404, error: 'Personagem não encontrado' };
+      chars[idx] = { ...chars[idx], ...pickFields(req.body, fields) };
+      writeJSON(file, chars);
+      return { char: chars[idx] };
+    });
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    res.json(result.char);
+  });
+
+  app.delete(`${routePath}/:id`, requireAuth, requireRole('admin'), async (req, res) => {
+    await withFileLock(file, () => {
+      writeJSON(file, readJSON(file).filter((c) => c.id !== req.params.id));
+    });
+    removePatientPhotoFiles(req.params.id);
+    res.json({ ok: true });
+  });
+}
+
+// Freeplay expõe, além dos metadados, a dificuldade dinâmica vinda do MMR.
+function decorateFreeplayWithMmr(list) {
+  const mmr = readJSON('mmr.json', { players: {}, characters: {} });
+  return list.map((c) => {
+    const ch = mmr.characters && mmr.characters[c.id];
+    return {
+      ...c,
+      difficulty: mmrEngine.characterDifficulty(ch),
+      competitiveMatches: (ch && Number.isFinite(ch.n)) ? ch.n : 0,
+    };
+  });
+}
+
+mountCharacterCrud('/api/freeplay', 'freeplay-characters.json', 'fp', FREEPLAY_FIELDS, decorateFreeplayWithMmr);
+mountCharacterCrud('/api/exercises', 'exercises.json', 'ex', EXERCISE_FIELDS, null);
+
+// Progresso da trilha (exercícios concluídos por usuário).
+app.get('/api/progress/:userId', requireAuth, (req, res) => {
+  if (!canAccessUser(req.user, req.params.userId)) return res.status(403).json({ error: 'Acesso negado' });
+  const all = readJSON('progress.json', {});
+  res.json(all[req.params.userId] || {});
+});
+app.post('/api/progress/:userId', requireAuth, async (req, res) => {
+  if (!canAccessUser(req.user, req.params.userId)) return res.status(403).json({ error: 'Acesso negado' });
+  const saved = await withFileLock('progress.json', () => {
+    const all = readJSON('progress.json', {});
+    all[req.params.userId] = { ...(all[req.params.userId] || {}), ...(req.body || {}) };
+    writeJSON('progress.json', all);
+    return all[req.params.userId];
+  });
+  res.json(saved);
 });
 
 // IDs de personagem são gerados no servidor (ch<ts>-<hex>), mas validamos antes
@@ -500,15 +951,6 @@ function removePatientPhotoFiles(id) {
   }
 }
 
-app.delete('/api/characters/:id', requireAuth, requireRole('admin'), async (req, res) => {
-  await withFileLock('characters.json', () => {
-    const chars = readJSON('characters.json').filter((c) => c.id !== req.params.id);
-    writeJSON('characters.json', chars);
-  });
-  removePatientPhotoFiles(req.params.id);
-  res.json({ ok: true });
-});
-
 // data:image/jpeg;base64,XXXX → Buffer (só imagem).
 function decodeImageDataUrl(s) {
   if (typeof s !== 'string') return null;
@@ -517,9 +959,11 @@ function decodeImageDataUrl(s) {
   try { return Buffer.from(m[1], 'base64'); } catch { return null; }
 }
 
-app.put('/api/characters/:id/photo', requireAuth, requireRole('admin'), writeLimiter, async (req, res) => {
-  const result = await withFileLock('characters.json', () => {
-    const chars = readJSON('characters.json');
+// Foto do paciente. Só freeplay tem foto (exercícios são cenários, não pessoas).
+app.put('/api/freeplay/:id/photo', requireAuth, requireRole('admin'), writeLimiter, async (req, res) => {
+  const file = 'freeplay-characters.json';
+  const result = await withFileLock(file, () => {
+    const chars = readJSON(file);
     const idx = chars.findIndex((c) => c.id === req.params.id);
     if (idx === -1) return { status: 404, error: 'Personagem não encontrado' };
 
@@ -527,7 +971,7 @@ app.put('/api/characters/:id/photo', requireAuth, requireRole('admin'), writeLim
       removePatientPhotoFiles(req.params.id);
       delete chars[idx].photoIcon;
       delete chars[idx].photoFull;
-      writeJSON('characters.json', chars);
+      writeJSON(file, chars);
       return { char: chars[idx] };
     }
     const icon = decodeImageDataUrl(req.body && req.body.icon);
@@ -545,7 +989,7 @@ app.put('/api/characters/:id/photo', requireAuth, requireRole('admin'), writeLim
     const v = Date.now();
     chars[idx].photoIcon = `/patient-photos/${req.params.id}-icon.jpg?v=${v}`;
     chars[idx].photoFull = `/patient-photos/${req.params.id}-full.jpg?v=${v}`;
-    writeJSON('characters.json', chars);
+    writeJSON(file, chars);
     return { char: chars[idx] };
   });
   if (result.error) return res.status(result.status).json({ error: result.error });
@@ -561,8 +1005,21 @@ const LOG_MAX_MESSAGES = 500;
 const LOG_MAX_MESSAGE_LEN = 20000;
 const LOG_MAX_EVAL_LEN = 50000;
 const LOG_MAX_TITLE = 200;
+// Tipos de sessão registráveis. (Neuro do All_OS NÃO é portado.)
+const LOG_VALID_TYPES = ['exercise', 'freeplay'];
 
 function clampStr(v, max) { return v == null ? '' : String(v).slice(0, max); }
+
+// Competência (1..5) do exercício. `Number(null)`, `Number('')` e `Number([])`
+// valem 0 — um `Number.isFinite(Number(v))` ingênuo gravaria a competência 0, que
+// não existe. Aceita número ou string numérica; qualquer outra coisa vira null.
+function normalizeSkillId(v) {
+  if (typeof v === 'string' && v.trim() === '') return null;
+  if (typeof v !== 'number' && typeof v !== 'string') return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 function logExpiresAt(log) {
   const t = new Date(log.timestamp || 0).getTime();
   if (!Number.isFinite(t) || t === 0) return null;
@@ -593,22 +1050,36 @@ app.get('/api/logs', requireAuth, (req, res) => {
     if (canSeeAllLogs(req.user)) return decorated;
     return decorated.map(({ criteriaScores, ...rest }) => rest);
   };
-  // Aluno: só os próprios.
-  if (req.user.role === 'therapist') {
+  // Deny-by-default: quem não é professor/admin só enxerga os próprios logs.
+  // (Aluno e visitante caem aqui — antes o visitante escapava do filtro de
+  // 'therapist' e recebia os logs de todo mundo.)
+  if (!canSeeAllLogs(req.user)) {
     return res.json(serve(logs.filter((l) => l.userId === req.user.id)));
   }
-  // Filtro por userId específico (admin/professor abrindo um aluno).
+  // Filtro por userId específico (admin/professor abrindo um aluno). O professor
+  // só alcança alunos vinculados a ele — mesma regra de canAccessUser.
   if (req.query.userId) {
+    if (!canAccessUser(req.user, req.query.userId)) return res.status(403).json({ error: 'Acesso negado' });
     return res.json(serve(logs.filter((l) => l.userId === req.query.userId)));
   }
-  // Professor e admin: todos os logs.
-  res.json(serve(logs));
+  // Admin vê tudo; professor, só os logs dos seus alunos (e os próprios).
+  if (isAdmin(req.user)) return res.json(serve(logs));
+  const mine = new Set(
+    readJSON('users.json')
+      .filter((u) => u.teacherId === req.user.id)
+      .map((u) => u.id),
+  );
+  mine.add(req.user.id);
+  res.json(serve(logs.filter((l) => mine.has(l.userId))));
 });
 
 app.get('/api/logs/policy', requireAuth, (req, res) => res.json({ ttlDays: LOG_TTL_DAYS }));
 
 app.post('/api/logs', requireAuth, writeLimiter, async (req, res) => {
   const body = req.body || {};
+  if (!LOG_VALID_TYPES.includes(body.type)) {
+    return res.status(400).json({ error: 'type inválido (exercise|freeplay)' });
+  }
   const rawMessages = Array.isArray(body.messages) ? body.messages : [];
   if (rawMessages.length > LOG_MAX_MESSAGES) return res.status(400).json({ error: `messages excede limite de ${LOG_MAX_MESSAGES}` });
   const cleanMessages = rawMessages.map((m) => ({
@@ -618,24 +1089,57 @@ app.post('/api/logs', requireAuth, writeLimiter, async (req, res) => {
     comment: clampStr(m && m.comment, 2000),
   }));
 
+  // Rede de segurança: se o cliente mandar a avaliação com o bloco
+  // `[notas-supervisor]` ainda colado no texto, ele é separado AQUI. Sem isso o
+  // gabarito de notas ficaria salvo em texto puro no log e voltaria para o
+  // próprio aluno em GET /api/logs (que só remove o campo `criteriaScores`).
+  const { clean: noNotes, criteria: supervisorCriteria } = extractSupervisorNotes(body.evaluation);
+  // Idem para o `[NOTA:X]` dos avaliadores customizados: se sobrar no texto, some
+  // daqui e, na falta de `score` no body, vira a nota do log.
+  const { clean: cleanEvaluation, score: inlineScore } = extractFinalScore(noNotes);
+
   const explicitCriteria = (body.criteriaScores && typeof body.criteriaScores === 'object') ? body.criteriaScores : null;
   let finalScore = Number.isFinite(body.score) ? Number(body.score) : null;
-  if (explicitCriteria && finalScore === null) {
-    const computed = finalScoreFromCriteria(explicitCriteria);
+  // Nota derivada das notas por critério (a IA não faz a conta; ver scoring.js).
+  // `criteriaScores` explícito no body tem prioridade sobre o bloco extraído.
+  if (finalScore === null) {
+    const computed = finalScoreFromCriteria(explicitCriteria || supervisorCriteria);
     if (computed !== null) finalScore = computed;
+    else if (inlineScore !== null) finalScore = inlineScore;
+  }
+
+  // mode só é significativo para freeplay: 'competitive' alimenta o MMR.
+  const mode = body.mode === 'competitive' ? 'competitive' : 'training';
+
+  // Dificuldade e competência do exercício, resolvidas server-side a partir do
+  // `exercises.json` — o cliente não decide nenhuma das duas. `difficulty`
+  // alimenta a conquista 'all_difficulties'; `skillId` diz qual competência a
+  // sessão treinou (relatórios por competência).
+  // (O All_OS confia no `body.skillId` enviado pelo cliente; aqui não.)
+  let difficulty = null;
+  let skillId = null;
+  if (body.type === 'exercise' && body.itemId) {
+    const ex = readJSON('exercises.json').find((e) => String(e.id) === String(body.itemId));
+    if (ex) {
+      if (ex.difficulty) difficulty = String(ex.difficulty);
+      skillId = normalizeSkillId(ex.skillId);
+    }
   }
 
   const log = {
     id: 'log' + Date.now() + '-' + crypto.randomBytes(3).toString('hex'),
     timestamp: new Date().toISOString(),
-    type: 'simulacao',
+    type: body.type,
+    mode,
+    difficulty,
+    skillId,
     itemId: clampStr(body.itemId, 200),
     itemTitle: clampStr(body.itemTitle, LOG_MAX_TITLE),
     durationSeconds: Number.isFinite(body.durationSeconds) ? Math.max(0, Math.floor(body.durationSeconds)) : 0,
     sessionCount: Number.isFinite(body.sessionCount) ? Math.max(1, Math.floor(body.sessionCount)) : 1,
     score: finalScore,
-    criteriaScores: explicitCriteria || null,
-    evaluation: clampStr(body.evaluation, LOG_MAX_EVAL_LEN),
+    criteriaScores: explicitCriteria || supervisorCriteria || null,
+    evaluation: clampStr(cleanEvaluation, LOG_MAX_EVAL_LEN),
     messages: cleanMessages,
     userId: req.user.id,
     userName: req.user.name,
@@ -645,7 +1149,35 @@ app.post('/api/logs', requireAuth, writeLimiter, async (req, res) => {
     logs.push(log);
     writeJSON('logs.json', logs);
   });
-  res.json({ ...log, expiresAt: logExpiresAt(log) });
+
+  // Partida ranqueada: só freeplay competitivo, com nota numérica e usuário real.
+  // O resultado volta no corpo da resposta (`mmr`) para a sessão exibir o card
+  // de pós-partida; se o cálculo falhar, o log já está salvo e `mmr` fica ausente.
+  let mmrResult = null;
+  if (mode === 'competitive' && log.type === 'freeplay' && Number.isFinite(finalScore) && !isVisitor(req.user)) {
+    try {
+      mmrResult = await withFileLock('mmr.json', () => {
+        const store = readJSON('mmr.json', { players: {}, characters: {} });
+        const player = store.players[req.user.id] || mmrEngine.newPlayer();
+        const character = store.characters[log.itemId] || mmrEngine.newCharacter();
+        const out = mmrEngine.updateMatch(player, character, finalScore);
+        store.players[req.user.id] = out.player;
+        store.characters[log.itemId] = out.character;
+        writeJSON('mmr.json', store);
+        // Durante a calibração o MMR fica oculto (playerView devolve mmr: null),
+        // então o delta também não é exibível.
+        return {
+          ...mmrEngine.playerView(out.player),
+          delta: out.result.calibrating ? null : Math.round(out.result.delta),
+          characterDifficulty: mmrEngine.characterDifficulty(out.character),
+        };
+      });
+    } catch (err) {
+      console.error('Erro ao atualizar MMR:', err.message);
+    }
+  }
+
+  res.json({ ...log, expiresAt: logExpiresAt(log), ...(mmrResult ? { mmr: mmrResult } : {}) });
 });
 
 app.delete('/api/logs/:id', requireAuth, requireRole('admin'), async (req, res) => {
@@ -659,7 +1191,7 @@ app.delete('/api/logs/:id', requireAuth, requireRole('admin'), async (req, res) 
 // =====================================================================
 // SESSÕES ATIVAS (persistência de sessão não finalizada)
 // =====================================================================
-const VALID_SESSION_TYPES = ['simulacao'];
+const VALID_SESSION_TYPES = ['exercise', 'freeplay'];
 function activeSessionKey(userId, type, itemId) { return `${userId}__${type}__${itemId}`; }
 function readActiveSessions() { return readJSON('active-sessions.json', {}); }
 
@@ -711,6 +1243,11 @@ const PATIENT_MODEL = process.env.OPENAI_PATIENT_MODEL || 'gpt-4o-mini';
 const PATIENT_EFFORT = process.env.OPENAI_PATIENT_EFFORT || 'none';
 const EVAL_MODEL = process.env.OPENAI_EVAL_MODEL || 'gpt-4o';
 const WHISPER_MODEL = process.env.OPENAI_WHISPER_MODEL || 'whisper-1';
+// O entrevistador gera o prompt do paciente: tarefa longa e nuançada, pede um
+// modelo mais forte e um teto de saída bem maior que o do paciente.
+const ENTREVISTADOR_MODEL = process.env.OPENAI_ENTREVISTADOR_MODEL || EVAL_MODEL;
+const ENTREVISTADOR_EFFORT = process.env.OPENAI_ENTREVISTADOR_EFFORT || 'medium';
+const ENTREVISTADOR_MAX_TOKENS = 16000;
 
 function getOpenAI() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -740,59 +1277,131 @@ async function openaiChat({ openai, model, systemPrompt, messages, maxTokens, ef
   return resp.choices?.[0]?.message?.content || '';
 }
 
+// Prompt do entrevistador (construção de personagem). IP da Allos: só admin lê.
+const ENTREVISTADOR_DIR = path.join(__dirname, 'entrevistador');
+function loadEntrevistadorPrompt() {
+  const p = path.join(ENTREVISTADOR_DIR, 'promptentrevistador.md');
+  if (!fs.existsSync(p)) return null;
+  return fs.readFileSync(p, 'utf-8');
+}
+
 // Resolve o system prompt do paciente server-side (nunca confia no cliente).
-function resolveSimulationPrompt(itemId) {
-  const c = readJSON('characters.json').find((x) => String(x.id) === String(itemId));
+// Dois tipos: 'exercise' usa o prompt da trilha (com skillId); 'freeplay' usa o
+// prompt de simulação livre.
+function resolveChatPrompt(type, itemId) {
+  if (type === 'exercise') {
+    const e = readJSON('exercises.json').find((x) => String(x.id) === String(itemId));
+    if (!e) return { status: 404, error: 'Exercício não encontrado' };
+    return { systemPrompt: buildExercisePrompt(e.skillId, e.specificInstruction), character: e };
+  }
+  const c = readJSON('freeplay-characters.json').find((x) => String(x.id) === String(itemId));
   if (!c) return { status: 404, error: 'Personagem não encontrado' };
-  return { systemPrompt: buildSimulationPrompt(c.specificInstruction), character: c };
+  return { systemPrompt: buildFreeplayPrompt(c.specificInstruction), character: c };
 }
 
 app.post('/api/chat', requireAuth, aiLimiter, async (req, res) => {
-  const { messages, context } = req.body || {};
-  if (!context || typeof context !== 'object' || !context.itemId) {
-    return res.status(400).json({ error: 'context é obrigatório (type + itemId)' });
+  const { messages, context, mode } = req.body || {};
+
+  // O system prompt é SEMPRE resolvido no servidor. Rejeita explicitamente para
+  // que um cliente antigo que ainda mande o campo falhe alto, e não silenciosamente.
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'systemPrompt')) {
+    return res.status(400).json({ error: 'systemPrompt não é aceito no body. Use context: { type, itemId } ou mode.' });
   }
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages deve ser uma lista' });
 
-  const resolved = resolveSimulationPrompt(context.itemId);
-  if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
+  const isEntrevistador = mode === 'entrevistador';
+
+  // Entrevistador: prompt próprio, admin-only. Não usa context.
+  let systemPrompt;
+  if (isEntrevistador) {
+    if (!isAdmin(req.user)) return res.status(403).json({ error: 'Acesso negado' });
+    systemPrompt = loadEntrevistadorPrompt();
+    if (!systemPrompt) return res.status(500).json({ error: 'Prompt do entrevistador não configurado.' });
+  } else {
+    if (!context || typeof context !== 'object' || !context.itemId) {
+      return res.status(400).json({ error: 'context é obrigatório (type + itemId)' });
+    }
+    const resolved = resolveChatPrompt(context.type, context.itemId);
+    if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
+    systemPrompt = resolved.systemPrompt;
+  }
 
   const openai = getOpenAI();
   if (!openai) {
-    return res.json({ role: 'assistant', content: '[Modo demonstração — OPENAI_API_KEY não configurada] Olá, obrigado por me receber. Podemos começar quando você quiser.' });
+    return res.json({
+      role: 'assistant',
+      content: isEntrevistador
+        ? '[Modo demonstração — OPENAI_API_KEY não configurada] Não é possível conduzir a entrevista sem a chave da OpenAI.'
+        : '[Modo demonstração — OPENAI_API_KEY não configurada] Olá, obrigado por me receber. Podemos começar quando você quiser.',
+    });
   }
   const validTurns = (messages || []).filter((m) => m && (m.role === 'user' || m.role === 'assistant') && (typeof m.content === 'string' ? m.content : String(m.content || '')));
   if (!validTurns.length) return res.status(400).json({ error: 'messages não contém turnos válidos (user/assistant)' });
 
   try {
-    const content = await openaiChat({ openai, model: PATIENT_MODEL, systemPrompt: resolved.systemPrompt, messages, maxTokens: 1200, effort: PATIENT_EFFORT });
+    const content = await openaiChat({
+      openai,
+      model: isEntrevistador ? ENTREVISTADOR_MODEL : PATIENT_MODEL,
+      systemPrompt,
+      messages,
+      maxTokens: isEntrevistador ? ENTREVISTADOR_MAX_TOKENS : 1200,
+      effort: isEntrevistador ? ENTREVISTADOR_EFFORT : PATIENT_EFFORT,
+    });
     res.json({ role: 'assistant', content });
   } catch (err) {
-    console.error('OpenAI paciente error:', err.message);
+    console.error(`OpenAI ${isEntrevistador ? 'entrevistador' : 'paciente'} error:`, err.message);
     res.status(500).json({ error: 'Erro ao comunicar com a IA: ' + err.message });
   }
 });
 
-// --- AVALIAÇÃO (estrutura pronta; DESLIGADA por padrão) ---
-// Quando quiser ligar o avaliador:
-//   1. defina EVALUATOR_ENABLED=true (ou ligue pela tela de Contas),
-//   2. coloque o prompt em server/avaliacao/avaliador.md,
-//   3. escolha OPENAI_EVAL_MODEL.
+// --- AVALIAÇÃO (DESLIGADA por padrão) ---
+// Para ligar: EVALUATOR_ENABLED=true no primeiro boot (semeia settings.json) ou
+// o toggle na tela de Contas. O modelo vem de OPENAI_EVAL_MODEL.
 // O fluxo de log (POST /api/logs) e o contexto do gabarito (evaluationCriteria,
 // injetado server-side) já estão prontos — nada mais precisa mudar no cliente.
 const AVALIACAO_DIR = path.join(__dirname, 'avaliacao');
+// Prompt do avaliador de sessão. `avaliador.md` é um override opcional; o padrão
+// é o mesmo arquivo versionado que o All_OS usa (avaliador-v16-2.md).
+const EVALUATOR_PROMPT_FILES = ['avaliador.md', 'avaliador-v16-2.md'];
 function loadEvaluatorPrompt() {
-  const p = path.join(AVALIACAO_DIR, 'avaliador.md');
-  if (!fs.existsSync(p)) return null;
-  return fs.readFileSync(p, 'utf-8');
+  for (const name of EVALUATOR_PROMPT_FILES) {
+    const content = loadPromptFile(name);
+    if (content) return content;
+  }
+  return null;
 }
 function evaluatorEnabled() {
   const s = readJSON('settings.json', {});
   return !!s.evaluatorEnabled;
 }
-function resolveEvaluationCriteria(itemId) {
-  const c = readJSON('characters.json').find((x) => String(x.id) === String(itemId));
+// Gabarito do caso (freeplay): critério de correção injetado na mensagem do
+// avaliador, server-side. Nunca vai ao cliente.
+//
+// Exercício NÃO tem gabarito: o `evaluatorPrompt` dele é um AVALIADOR próprio
+// (ver resolveEvaluatorPrompt), não um critério de correção.
+function resolveEvaluationCriteria(type, itemId) {
+  if (type === 'exercise') return '';
+  const c = readJSON('freeplay-characters.json').find((x) => String(x.id) === String(itemId));
   return c && c.evaluationCriteria && String(c.evaluationCriteria).trim() ? String(c.evaluationCriteria).trim() : '';
+}
+
+/**
+ * System prompt da avaliação. Um exercício da trilha pode ter avaliador próprio
+ * (`evaluatorPrompt`); os demais casos usam o avaliador global.
+ * Retorna `{ systemPrompt, custom }` ou `{ error }` se nenhum prompt resolver.
+ */
+function resolveEvaluatorPrompt(context) {
+  if (context && context.type === 'exercise' && context.itemId) {
+    const e = readJSON('exercises.json').find((x) => String(x.id) === String(context.itemId));
+    if (e && e.evaluatorPrompt && String(e.evaluatorPrompt).trim()) {
+      return { systemPrompt: wrapCustomEvaluatorPrompt(e.evaluatorPrompt), custom: true };
+    }
+  }
+  const global = loadEvaluatorPrompt();
+  if (!global) {
+    return { error: `Avaliação ligada mas o prompt do avaliador não foi encontrado (server/avaliacao/${EVALUATOR_PROMPT_FILES.join(' ou ')}).` };
+  }
+  return { systemPrompt: global, custom: false };
 }
 
 app.post('/api/evaluate', requireAuth, aiLimiter, async (req, res) => {
@@ -803,15 +1412,21 @@ app.post('/api/evaluate', requireAuth, aiLimiter, async (req, res) => {
     // agradecimento e o log é salvo para análise humana.
     return res.json({ role: 'assistant', content: '', disabled: true });
   }
+  // Visitante só é avaliado se o admin ligar explicitamente (custo de IA).
+  if (isVisitor(req.user) && !readJSON('settings.json', {}).visitorEvaluationEnabled) {
+    return res.json({ role: 'assistant', content: '', disabled: true });
+  }
   const openai = getOpenAI();
   if (!openai) return res.status(503).json({ error: 'Avaliação indisponível: OPENAI_API_KEY não configurada.' });
-  const systemPrompt = loadEvaluatorPrompt();
-  if (!systemPrompt) return res.status(500).json({ error: 'Avaliação ligada mas o prompt do avaliador não foi configurado (server/avaliacao/avaliador.md).' });
+  // Exercício com avaliador próprio usa o dele; o resto, o avaliador global.
+  const resolved = resolveEvaluatorPrompt(context);
+  if (resolved.error) return res.status(500).json({ error: resolved.error });
+  const systemPrompt = resolved.systemPrompt;
 
   // Injeta o gabarito (evaluationCriteria) ANTES do log, server-side.
   let finalMessages = messages;
   if (context && context.itemId) {
-    const gabarito = resolveEvaluationCriteria(context.itemId);
+    const gabarito = resolveEvaluationCriteria(context.type, context.itemId);
     if (gabarito) {
       const idx = messages.findIndex((m) => m && m.role === 'user');
       if (idx !== -1) {
@@ -821,8 +1436,23 @@ app.post('/api/evaluate', requireAuth, aiLimiter, async (req, res) => {
     }
   }
   try {
-    const content = await openaiChat({ openai, model: EVAL_MODEL, systemPrompt, messages: finalMessages, maxTokens: 4000, effort: process.env.OPENAI_EVAL_EFFORT || 'medium' });
-    res.json({ role: 'assistant', content });
+    const raw = await openaiChat({ openai, model: EVAL_MODEL, systemPrompt, messages: finalMessages, maxTokens: 4000, effort: process.env.OPENAI_EVAL_EFFORT || 'medium' });
+
+    // Duas famílias de avaliador, dois formatos de nota:
+    //  - customizado (exercício): emite `[NOTA:X]` já na escala do próprio prompt.
+    //  - global: emite o bloco `[notas-supervisor]` e a nota sai do scoring.js.
+    // Em ambos os casos o marcador é removido do texto que o aluno recebe.
+    let payload;
+    if (resolved.custom) {
+      const { clean, score } = extractFinalScore(raw);
+      payload = { role: 'assistant', content: clean, score };
+    } else {
+      const { clean, criteria } = extractSupervisorNotes(raw);
+      payload = { role: 'assistant', content: clean, score: finalScoreFromCriteria(criteria) };
+      if (canSeeAllLogs(req.user)) payload.criteriaScores = criteria;
+    }
+    if (canSeeAllLogs(req.user)) payload.reasoning = raw;
+    res.json(payload);
   } catch (err) {
     console.error('OpenAI avaliador error:', err.message);
     res.status(500).json({ error: 'Erro ao avaliar a sessão: ' + err.message });
@@ -858,16 +1488,703 @@ app.post('/api/transcribe', requireAuth, aiLimiter, async (req, res) => {
 // =====================================================================
 app.get('/api/settings', requireAuth, (req, res) => {
   const s = readJSON('settings.json', {});
-  res.json({ evaluatorEnabled: !!s.evaluatorEnabled });
+  res.json({ evaluatorEnabled: !!s.evaluatorEnabled, visitorEvaluationEnabled: !!s.visitorEvaluationEnabled });
 });
 app.put('/api/admin/settings', requireAuth, requireRole('admin'), async (req, res) => {
   const saved = await withFileLock('settings.json', () => {
     const s = readJSON('settings.json', {});
     if ('evaluatorEnabled' in (req.body || {})) s.evaluatorEnabled = !!req.body.evaluatorEnabled;
+    if ('visitorEvaluationEnabled' in (req.body || {})) s.visitorEvaluationEnabled = !!req.body.visitorEvaluationEnabled;
     writeJSON('settings.json', s);
     return s;
   });
-  res.json({ evaluatorEnabled: !!saved.evaluatorEnabled });
+  res.json({ evaluatorEnabled: !!saved.evaluatorEnabled, visitorEvaluationEnabled: !!saved.visitorEvaluationEnabled });
+});
+
+// =====================================================================
+// HELPERS DE AVALIAÇÃO (usados por duelo e progressão)
+// =====================================================================
+// Os avaliadores emitem, ao fim do texto, um bloco [notas-supervisor] com as
+// notas por critério. O texto limpo vai ao aluno; as notas ficam server-side.
+function parseSupervisorPayload(payload) {
+  if (!payload) return null;
+  try {
+    const obj = JSON.parse(payload);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      const out = {};
+      for (const [k, v] of Object.entries(obj)) {
+        const n = Number(String(v).replace(',', '.'));
+        if (Number.isFinite(n)) out[String(k)] = n;
+      }
+      if (Object.keys(out).length) return out;
+    }
+  } catch {}
+  let text = payload;
+  if (!payload.includes(':') && /^[A-Za-z0-9+/=\s]+$/.test(payload)) {
+    try { text = Buffer.from(payload, 'base64').toString('utf-8'); } catch {}
+  }
+  // Varre os pares em QUALQUER posição, não só um por linha: o avaliador
+  // comparativo devolve os seis de uma vez ("A1: 4  A2: 4  A3: 4 …"), e às vezes
+  // sobra uma cerca ``` residual. Um regex por linha ancorado em ^...$ perdia
+  // tudo isso e o duelo travava em `pending` para sempre.
+  // Chave alfanumérica: "3:8" (avaliador de sessão) ou "A1:8"/"B2:7" (comparativo).
+  const out = {};
+  const re = /\b([A-Za-z]?\d+)\s*:\s*([-+]?\d+(?:[.,]\d+)?)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) out[m[1]] = Number(m[2].replace(',', '.'));
+  return Object.keys(out).length ? out : null;
+}
+
+function extractSupervisorNotes(evaluation) {
+  const text = typeof evaluation === 'string' ? evaluation : '';
+  // A cerca ``` pode abrir ANTES do marcador (o modelo às vezes envolve o bloco
+  // inteiro), e nesse caso ela sobraria pendurada no fim do texto do aluno.
+  const m = text.match(/\n*(?:```[a-z]*[^\S\n]*\r?\n)?(?:-{3,}[^\S\n]*\r?\n+)?\[notas-supervisor\][^\S\n]*\r?\n?([\s\S]*)$/i);
+  if (!m) return { clean: text, criteria: null };
+  const clean = text.slice(0, m.index).replace(/\s+$/, '');
+  let payload = (m[1] || '').trim();
+  payload = payload.replace(/^```[a-z]*[ \t]*\r?\n?/i, '').replace(/\r?\n?```\s*$/i, '').trim();
+  return { clean, criteria: parseSupervisorPayload(payload) };
+}
+
+/**
+ * Nota final emitida por um avaliador CUSTOMIZADO no formato `[NOTA:X]`.
+ * Cada avaliador de exercício traz a própria escala (ex.: 5 eixos de 0 a 2), então
+ * a nota vem pronta da IA — diferente do avaliador global, cuja nota é calculada
+ * em código a partir do bloco `[notas-supervisor]`.
+ * Remove a linha do texto para que o aluno não a veja duplicada.
+ */
+function extractFinalScore(evaluation) {
+  const text = typeof evaluation === 'string' ? evaluation : '';
+  const re = /\[NOTA:\s*([-+]?\d+(?:[.,]\d+)?)\s*\]/i;
+  const m = text.match(re);
+  if (!m) return { clean: text, score: null };
+  const score = Number(m[1].replace(',', '.'));
+  const clean = text.replace(re, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { clean, score: Number.isFinite(score) ? score : null };
+}
+
+function transcriptFromMessages(messages, authorName, characterName) {
+  return (messages || [])
+    .map((m) => {
+      const author = m.role === 'user' ? authorName : characterName;
+      const star = m.highlighted ? ' ★' : '';
+      const comment = m.highlighted && m.comment ? `\n   {${m.comment}}` : '';
+      return `[${author}${star}]\n${m.content}${comment}`;
+    })
+    .join('\n\n---\n\n');
+}
+
+function loadPromptFile(name) {
+  const p = path.join(AVALIACAO_DIR, name);
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
+}
+
+// =====================================================================
+// DUELO
+// =====================================================================
+const DUEL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DUEL_MAX_MESSAGES = 500;
+const DUEL_MAX_MESSAGE_LEN = 20000;
+
+function readDuels() { return readJSON('duels.json', []); }
+
+function pruneExpiredDuels() {
+  let duels;
+  try { duels = readDuels(); } catch { return 0; }
+  if (!Array.isArray(duels) || !duels.length) return 0;
+  const cutoff = Date.now() - DUEL_TTL_MS;
+  const kept = duels.filter((d) => {
+    const t = new Date(d.createdAt || 0).getTime();
+    return !Number.isFinite(t) || t === 0 || t >= cutoff;
+  });
+  if (kept.length === duels.length) return 0;
+  writeJSON('duels.json', kept);
+  return duels.length - kept.length;
+}
+
+function sanitizeDuelMessages(messages) {
+  const raw = Array.isArray(messages) ? messages.slice(0, DUEL_MAX_MESSAGES) : [];
+  return raw.map((m) => ({
+    role: m && m.role === 'assistant' ? 'assistant' : 'user',
+    content: clampStr(m && m.content, DUEL_MAX_MESSAGE_LEN),
+    highlighted: !!(m && m.highlighted),
+    comment: clampStr(m && m.comment, 2000),
+  }));
+}
+
+function duelIdentity(user) {
+  return { userId: user.id, name: user.name, profilePhoto: user.profilePhoto || '', isVisitor: isVisitor(user) };
+}
+function duelSideFor(duel, user) {
+  if (duel.challenger && duel.challenger.userId === user.id) return 'challenger';
+  if (duel.opponent && duel.opponent.userId === user.id) return 'opponent';
+  return null;
+}
+function isDuelParticipant(duel, user) { return !!duelSideFor(duel, user) || isAdmin(user); }
+
+// O cliente nunca recebe as mensagens do adversário antes do fim.
+function publicDuel(duel, user) {
+  const side = duelSideFor(duel, user);
+  const done = duel.status === 'completed';
+  const strip = (s) => (s ? { userId: s.userId, name: s.name, profilePhoto: s.profilePhoto, state: s.state, accepted: !!s.accepted, submittedAt: s.submittedAt || null } : null);
+  const out = {
+    id: duel.id, token: duel.token, mode: duel.mode, status: duel.status,
+    createdAt: duel.createdAt, inviteMethod: duel.inviteMethod,
+    character: duel.character ? { id: duel.character.id, name: duel.character.name } : null,
+    challenger: strip(duel.challenger),
+    opponent: strip(duel.opponent),
+    side,
+    result: done ? duel.result : null,
+  };
+  // Cada lado vê só as próprias mensagens (até o duelo terminar).
+  if (side && duel[side]) out.myMessages = duel[side].messages || [];
+  if (done || isAdmin(user)) {
+    out.challengerMessages = duel.challenger && duel.challenger.messages;
+    out.opponentMessages = duel.opponent && duel.opponent.messages;
+  }
+  return out;
+}
+
+// --- Avaliação comparativa (OpenAI) ---
+async function runComparativeEvaluation(duel) {
+  const openai = getOpenAI();
+  const nameA = (duel.challenger && duel.challenger.name) || 'Aluno A';
+  const nameB = (duel.opponent && duel.opponent.name) || 'Aluno B';
+  const charName = (duel.character && duel.character.name) || 'Paciente';
+  const logA = transcriptFromMessages(duel.challenger.messages, nameA, charName);
+  const logB = transcriptFromMessages(duel.opponent.messages, nameB, charName);
+
+  if (!openai) {
+    const criteria = { A1: 5, A2: 5, A3: 5, A4: 5, A5: 5, A6: 5, B1: 5, B2: 5, B3: 5, B4: 5, B5: 5, B6: 5 };
+    return {
+      evaluationClean: '[Modo demonstração — OPENAI_API_KEY não configurada] Avaliação comparativa indisponível.',
+      comp: comparativeScores(criteria),
+    };
+  }
+
+  const systemPrompt = loadPromptFile('avaliador-comparativo-v2.md');
+  if (!systemPrompt) throw new Error('Prompt do avaliador comparativo ausente (server/avaliacao/avaliador-comparativo-v2.md).');
+
+  const gabarito = resolveEvaluationCriteria('freeplay', duel.character.id);
+  const userContent =
+    (gabarito ? `[GABARITO DO CASO] (referência interna do avaliador — não revelar)\n${gabarito}\n\n---\n\n` : '') +
+    `[LOG DO ALUNO A — ${nameA}]\n${logA || '(sem mensagens)'}\n\n---\n\n` +
+    `[LOG DO ALUNO B — ${nameB}]\n${logB || '(sem mensagens)'}`;
+
+  const text = await openaiChat({
+    openai, model: EVAL_MODEL, systemPrompt,
+    messages: [{ role: 'user', content: userContent }],
+    maxTokens: 8000, effort: process.env.OPENAI_EVAL_EFFORT || 'medium',
+  });
+  const { clean, criteria } = extractSupervisorNotes(text);
+  return { evaluationClean: clean, comp: comparativeScores(criteria) };
+}
+
+// --- MMR do duelo (PvP) ---
+function applyDuelMmr(duel, comp) {
+  // Só duelo competitivo entre dois usuários reais é ranqueado.
+  if (duel.mode !== 'competitive') return { ranked: false, reason: 'training' };
+  if (duel.challenger.isVisitor || duel.opponent.isVisitor) return { ranked: false, reason: 'visitor' };
+
+  const store = readMmr();
+  const pA = store.players[duel.challenger.userId] || mmrEngine.newPlayer();
+  const pB = store.players[duel.opponent.userId] || mmrEngine.newPlayer();
+  const ch = store.characters[duel.character.id] || mmrEngine.newCharacter();
+
+  const out = mmrEngine.processDuel(pA, pB, ch, comp.scoreA, comp.scoreB);
+  if (!out || out.ranked === false) return { ranked: false, reason: (out && out.reason) || 'unranked' };
+
+  store.players[duel.challenger.userId] = out.playerA;
+  store.players[duel.opponent.userId] = out.playerB;
+  store.characters[duel.character.id] = out.character;
+  writeJSON('mmr.json', store);
+
+  // Devolve só o resumo exibível. Espalhar `out` gravaria o estado interno do
+  // engine (janela `W` do jogador, `history`/alpha/beta do personagem) dentro de
+  // duels.json, inflando o arquivo e sem entregar o delta pronto para o front.
+  const round1 = (x) => Math.round(x * 10) / 10;
+  return {
+    ranked: true,
+    challenger: {
+      before: Math.round(out.resultA.P_before),
+      after: Math.round(out.playerA.P),
+      delta: round1(out.resultA.delta),
+      pvpDelta: round1(out.pvp.deltaA),
+    },
+    opponent: {
+      before: Math.round(out.resultB.P_before),
+      after: Math.round(out.playerB.P),
+      delta: round1(out.resultB.delta),
+      pvpDelta: round1(out.pvp.deltaB),
+    },
+    characterDifficulty: mmrEngine.characterDifficulty(out.character),
+  };
+}
+
+async function finalizeDuel(duelId) {
+  const duels = readDuels();
+  const duel = duels.find((d) => d.id === duelId);
+  if (!duel) return;
+
+  let comp = null, evaluationClean = '';
+  try {
+    const r = await runComparativeEvaluation(duel);
+    comp = r.comp;
+    evaluationClean = r.evaluationClean;
+  } catch (err) {
+    console.error('Erro na avaliação comparativa:', err.message);
+  }
+
+  await withFileLock('duels.json', () => {
+    const all = readDuels();
+    const d = all.find((x) => x.id === duelId);
+    if (!d) return;
+    if (!comp) { d.status = 'pending'; writeJSON('duels.json', all); return; } // permite retry
+    const winner = comp.winner === 'A' ? 'challenger' : (comp.winner === 'B' ? 'opponent' : 'draw');
+    d.status = 'completed';
+    d.result = {
+      winner, evaluation: evaluationClean,
+      scoreChallenger: comp.scoreA, scoreOpponent: comp.scoreB,
+      criteriaChallenger: comp.criteriaA, criteriaOpponent: comp.criteriaB,
+      completedAt: new Date().toISOString(),
+    };
+    writeJSON('duels.json', all);
+  });
+
+  if (!comp) return;
+
+  // MMR (fora do lock de duels para não aninhar locks).
+  const fresh = readDuels().find((d) => d.id === duelId);
+  let mmrInfo = { ranked: false };
+  try {
+    mmrInfo = await withFileLock('mmr.json', () => applyDuelMmr(fresh, comp));
+  } catch (err) { console.error('Erro no MMR do duelo:', err.message); }
+
+  await withFileLock('duels.json', () => {
+    const all = readDuels();
+    const d = all.find((x) => x.id === duelId);
+    if (d && d.result) { d.result.mmr = mmrInfo; writeJSON('duels.json', all); }
+  });
+
+  // Notifica os dois lados (visitantes são ignorados dentro de pushNotification).
+  // `mmrDelta` só existe em duelo ranqueado (competitivo, entre dois usuários reais
+  // fora da calibração). É o mesmo `delta` que o card pós-duelo mostra — solo + PvP —
+  // senão o sino e a tela exibiriam números diferentes para a mesma partida.
+  const w = fresh.result ? fresh.result.winner : null;
+  const rankedMmr = mmrInfo && mmrInfo.ranked ? mmrInfo : null;
+  for (const side of ['challenger', 'opponent']) {
+    const me = fresh[side];
+    if (!me) continue;
+    const outcome = w === 'draw' ? 'draw' : (w === side ? 'win' : 'loss');
+    await pushNotification(me.userId, {
+      type: 'duel_result', duelId,
+      title: outcome === 'win' ? 'Você venceu o duelo' : (outcome === 'draw' ? 'Duelo empatado' : 'Você perdeu o duelo'),
+      outcome,
+      scoreMine: side === 'challenger' ? comp.scoreA : comp.scoreB,
+      scoreTheirs: side === 'challenger' ? comp.scoreB : comp.scoreA,
+      mmrDelta: rankedMmr ? rankedMmr[side].delta : null,
+    });
+  }
+}
+
+// Oponentes disponíveis (outros alunos).
+app.get('/api/duel/opponents', requireAuth, (req, res) => {
+  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não cria duelos.' });
+  const users = readJSON('users.json').filter((u) => u.role === 'therapist' && u.id !== req.user.id);
+  res.json(users.map((u) => ({ userId: u.id, name: u.name, profilePhoto: u.profilePhoto || '' })));
+});
+
+// Criar duelo.
+app.post('/api/duel', requireAuth, writeLimiter, async (req, res) => {
+  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não cria duelos.' });
+  const { characterId, opponentUserId, inviteMethod, mode } = req.body || {};
+  const character = readJSON('freeplay-characters.json').find((c) => String(c.id) === String(characterId));
+  if (!character) return res.status(404).json({ error: 'Personagem de simulação não encontrado.' });
+
+  const method = inviteMethod === 'system' ? 'system' : 'link';
+  let opponent = null;
+  if (method === 'system') {
+    const target = readJSON('users.json').find((u) => u.id === opponentUserId && u.role === 'therapist');
+    if (!target) return res.status(404).json({ error: 'Oponente não encontrado.' });
+    if (target.id === req.user.id) return res.status(400).json({ error: 'Não é possível duelar consigo mesmo.' });
+    opponent = { ...duelIdentity(target), state: 'invited', accepted: false, messages: [] };
+  }
+
+  const duel = {
+    id: 'duel' + Date.now() + '-' + crypto.randomBytes(3).toString('hex'),
+    token: crypto.randomBytes(12).toString('hex'),
+    createdAt: new Date().toISOString(),
+    mode: mode === 'competitive' ? 'competitive' : 'training',
+    status: 'pending',
+    inviteMethod: method,
+    character: { id: character.id, name: character.name },
+    challenger: { ...duelIdentity(req.user), state: 'in_progress', accepted: true, messages: [] },
+    opponent,
+  };
+
+  await withFileLock('duels.json', () => {
+    const all = readDuels();
+    all.push(duel);
+    writeJSON('duels.json', all);
+  });
+
+  if (opponent) {
+    await pushNotification(opponent.userId, {
+      type: 'duel_invite', duelId: duel.id,
+      title: `${req.user.name} desafiou você para um duelo`,
+      characterName: character.name,
+    });
+  }
+  res.json(publicDuel(duel, req.user));
+});
+
+// Resumo por token (tela de aceite via link).
+app.get('/api/duel/by-token/:token', requireAuth, (req, res) => {
+  const duel = readDuels().find((d) => d.token === req.params.token);
+  if (!duel) return res.status(404).json({ error: 'Duelo não encontrado.' });
+  res.json({
+    id: duel.id, token: duel.token, status: duel.status, mode: duel.mode,
+    character: duel.character,
+    challengerName: duel.challenger.name,
+    taken: !!(duel.opponent && duel.opponent.accepted),
+    side: duelSideFor(duel, req.user),
+  });
+});
+
+function acceptDuel(duel, user) {
+  if (duel.status === 'completed') return { status: 400, error: 'Duelo já finalizado.' };
+  if (duel.challenger.userId === user.id) return { status: 400, error: 'Você criou este duelo.' };
+  if (duel.opponent && duel.opponent.accepted) {
+    if (duel.opponent.userId === user.id) return { ok: true }; // já aceitou
+    return { status: 409, error: 'Este duelo já foi aceito por outra pessoa.' };
+  }
+  if (duel.inviteMethod === 'system' && duel.opponent && duel.opponent.userId !== user.id) {
+    return { status: 403, error: 'Este convite é de outro usuário.' };
+  }
+  duel.opponent = { ...duelIdentity(user), state: 'in_progress', accepted: true, messages: [] };
+  return { ok: true };
+}
+
+app.post('/api/duel/:id/accept', requireAuth, async (req, res) => {
+  const out = await withFileLock('duels.json', () => {
+    const all = readDuels();
+    const duel = all.find((d) => d.id === req.params.id);
+    if (!duel) return { status: 404, error: 'Duelo não encontrado.' };
+    const r = acceptDuel(duel, req.user);
+    if (r.error) return r;
+    writeJSON('duels.json', all);
+    return { duel };
+  });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  res.json(publicDuel(out.duel, req.user));
+});
+
+app.post('/api/duel/by-token/:token/accept', requireAuth, async (req, res) => {
+  const out = await withFileLock('duels.json', () => {
+    const all = readDuels();
+    const duel = all.find((d) => d.token === req.params.token);
+    if (!duel) return { status: 404, error: 'Duelo não encontrado.' };
+    const r = acceptDuel(duel, req.user);
+    if (r.error) return r;
+    writeJSON('duels.json', all);
+    return { duel };
+  });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  res.json(publicDuel(out.duel, req.user));
+});
+
+app.get('/api/duel/:id', requireAuth, (req, res) => {
+  const duel = readDuels().find((d) => d.id === req.params.id);
+  if (!duel) return res.status(404).json({ error: 'Duelo não encontrado.' });
+  if (!isDuelParticipant(duel, req.user)) return res.status(403).json({ error: 'Acesso negado.' });
+  res.json(publicDuel(duel, req.user));
+});
+
+// Cancelar: só o desafiante, e só enquanto ninguém aceitou.
+app.delete('/api/duel/:id', requireAuth, async (req, res) => {
+  const out = await withFileLock('duels.json', () => {
+    const all = readDuels();
+    const duel = all.find((d) => d.id === req.params.id);
+    if (!duel) return { status: 404, error: 'Duelo não encontrado.' };
+    if (duel.challenger.userId !== req.user.id && !isAdmin(req.user)) return { status: 403, error: 'Acesso negado.' };
+    if (duel.status !== 'pending' || (duel.opponent && duel.opponent.accepted)) {
+      return { status: 400, error: 'Duelo já aceito ou finalizado — não pode ser cancelado.' };
+    }
+    writeJSON('duels.json', all.filter((d) => d.id !== duel.id));
+    return { ok: true };
+  });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  res.json({ ok: true });
+});
+
+// Submeter a própria sessão. Quando os dois submeterem, dispara a avaliação.
+app.post('/api/duel/:id/submit', requireAuth, aiLimiter, async (req, res) => {
+  const messages = sanitizeDuelMessages(req.body && req.body.messages);
+  const durationSeconds = Number.isFinite(req.body && req.body.durationSeconds) ? Math.max(0, Math.floor(req.body.durationSeconds)) : 0;
+
+  const out = await withFileLock('duels.json', () => {
+    const all = readDuels();
+    const duel = all.find((d) => d.id === req.params.id);
+    if (!duel) return { status: 404, error: 'Duelo não encontrado.' };
+    const side = duelSideFor(duel, req.user);
+    if (!side) return { status: 403, error: 'Você não participa deste duelo.' };
+    if (duel.status === 'completed') return { status: 400, error: 'Duelo já finalizado.' };
+
+    duel[side].messages = messages;
+    duel[side].durationSeconds = durationSeconds;
+    duel[side].state = 'submitted';
+    duel[side].submittedAt = new Date().toISOString();
+
+    const bothSubmitted = duel.challenger.state === 'submitted' && duel.opponent && duel.opponent.state === 'submitted';
+    if (bothSubmitted) duel.status = 'evaluating';
+    writeJSON('duels.json', all);
+    return { duel, bothSubmitted };
+  });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+
+  res.json(publicDuel(out.duel, req.user));
+  // Avaliação roda depois da resposta (pode demorar).
+  if (out.bothSubmitted) finalizeDuel(out.duel.id).catch((e) => console.error('finalizeDuel:', e.message));
+});
+
+// Export em texto (participantes/admin, só depois de completo).
+app.get('/api/duel/:id/export', requireAuth, (req, res) => {
+  pruneExpiredDuels();
+  const duel = readDuels().find((d) => d.id === req.params.id);
+  if (!duel) return res.status(404).json({ error: 'Duelo não encontrado.' });
+  if (!isDuelParticipant(duel, req.user)) return res.status(403).json({ error: 'Acesso negado.' });
+  if (duel.status !== 'completed') return res.status(400).json({ error: 'Duelo ainda não finalizado.' });
+
+  const r = duel.result || {};
+  const body = [
+    `DUELO — ${duel.character.name}`,
+    `Data: ${duel.createdAt}`,
+    `Modo: ${duel.mode}`,
+    '',
+    '=== AVALIAÇÃO COMPARATIVA ===',
+    r.evaluation || '(sem avaliação)',
+    '',
+    `Nota ${duel.challenger.name}: ${r.scoreChallenger}`,
+    `Nota ${duel.opponent.name}: ${r.scoreOpponent}`,
+    `Vencedor: ${r.winner}`,
+    '',
+    `=== LOG — ${duel.challenger.name} ===`,
+    transcriptFromMessages(duel.challenger.messages, duel.challenger.name, duel.character.name),
+    '',
+    `=== LOG — ${duel.opponent.name} ===`,
+    transcriptFromMessages(duel.opponent.messages, duel.opponent.name, duel.character.name),
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="duelo-${duel.id}.txt"`);
+  res.send(body);
+});
+
+// Feed social: duelos agrupados por oponente.
+app.get('/api/duels/social', requireAuth, (req, res) => {
+  if (isVisitor(req.user)) return res.json([]);
+  pruneExpiredDuels();
+  const mine = readDuels().filter((d) => duelSideFor(d, req.user));
+  const byOpponent = new Map();
+
+  for (const d of mine) {
+    const side = duelSideFor(d, req.user);
+    const other = side === 'challenger' ? d.opponent : d.challenger;
+    if (!other) continue;
+    const key = other.userId;
+    if (!byOpponent.has(key)) {
+      byOpponent.set(key, { userId: other.userId, name: other.name, profilePhoto: other.profilePhoto || '', wins: 0, losses: 0, draws: 0, duels: [] });
+    }
+    const entry = byOpponent.get(key);
+    let outcome = null;
+    if (d.status === 'completed' && d.result) {
+      if (d.result.winner === 'draw') { entry.draws++; outcome = 'draw'; }
+      else if (d.result.winner === side) { entry.wins++; outcome = 'win'; }
+      else { entry.losses++; outcome = 'loss'; }
+    }
+    entry.duels.push({
+      id: d.id, status: d.status, mode: d.mode, createdAt: d.createdAt,
+      characterName: d.character.name, outcome,
+      scoreMine: d.result ? (side === 'challenger' ? d.result.scoreChallenger : d.result.scoreOpponent) : null,
+      scoreTheirs: d.result ? (side === 'challenger' ? d.result.scoreOpponent : d.result.scoreChallenger) : null,
+      canCancel: d.status === 'pending' && d.challenger.userId === req.user.id && !(d.opponent && d.opponent.accepted),
+      canExport: d.status === 'completed',
+    });
+  }
+
+  const list = [...byOpponent.values()].sort((a, b) => (b.duels.length - a.duels.length) || a.name.localeCompare(b.name));
+  res.json(list);
+});
+
+// =====================================================================
+// PROGRESSÃO (compara atendimento #1 vs #2 do mesmo paciente)
+// =====================================================================
+app.get('/api/progression/available-patients', requireAuth, (req, res) => {
+  const logs = readJSON('logs.json').filter((l) => l.userId === req.user.id && l.itemId && Array.isArray(l.messages) && l.messages.length > 0);
+  const byItem = new Map();
+  for (const l of logs) {
+    const prev = byItem.get(l.itemId);
+    if (!prev || new Date(l.timestamp) > new Date(prev.timestamp)) byItem.set(l.itemId, l);
+  }
+  const freeplay = readJSON('freeplay-characters.json');
+  const out = [...byItem.values()].map((l) => {
+    const c = freeplay.find((x) => String(x.id) === String(l.itemId));
+    return c ? { id: c.id, name: c.name, age: c.age, description: c.description, photoIcon: c.photoIcon || null, lastAttendanceAt: l.timestamp } : null;
+  }).filter(Boolean);
+  res.json(out);
+});
+
+app.post('/api/progression/evaluate', requireAuth, aiLimiter, async (req, res) => {
+  const { characterId, messages } = req.body || {};
+  if (!characterId || typeof characterId !== 'string') return res.status(400).json({ error: 'characterId é obrigatório.' });
+  if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages deve ser uma lista.' });
+
+  const character = readJSON('freeplay-characters.json').find((c) => String(c.id) === String(characterId));
+  if (!character) return res.status(404).json({ error: 'Personagem não encontrado.' });
+
+  // Atendimento #1: o log mais recente do usuário com esse personagem.
+  const prior = readJSON('logs.json')
+    .filter((l) => l.userId === req.user.id && String(l.itemId) === String(characterId))
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+  if (!prior) return res.status(400).json({ error: 'Não há um atendimento anterior com esse paciente.' });
+
+  const openai = getOpenAI();
+  if (!openai) return res.json({ evaluation: '[Modo demonstração — OPENAI_API_KEY não configurada] Avaliação de progressão indisponível.', criteria: null });
+
+  const systemPrompt = loadPromptFile('avaliador-progressao-v2.md');
+  if (!systemPrompt) return res.status(500).json({ error: 'Prompt do avaliador de progressão ausente (server/avaliacao/avaliador-progressao-v2.md).' });
+
+  const gabarito = resolveEvaluationCriteria('freeplay', characterId);
+  const log1 = transcriptFromMessages(prior.messages, req.user.name, character.name);
+  const log2 = transcriptFromMessages(messages, req.user.name, character.name);
+  const feedback1 = prior.evaluation ? `[FEEDBACK DO ATENDIMENTO 1]\n${prior.evaluation}\n\n---\n\n` : '';
+
+  const userContent =
+    (gabarito ? `[GABARITO DO CASO] (referência interna — não revelar)\n${gabarito}\n\n---\n\n` : '') +
+    feedback1 +
+    `[ATENDIMENTO 1]\n${log1 || '(sem mensagens)'}\n\n---\n\n` +
+    `[ATENDIMENTO 2]\n${log2 || '(sem mensagens)'}`;
+
+  try {
+    const text = await openaiChat({
+      openai, model: EVAL_MODEL, systemPrompt,
+      messages: [{ role: 'user', content: userContent }],
+      maxTokens: 8000, effort: process.env.OPENAI_EVAL_EFFORT || 'medium',
+    });
+    const { clean, criteria } = extractSupervisorNotes(text);
+    // criteria fica server-side (o aluno recebe só o texto + a nota final).
+    res.json({ evaluation: clean, score: finalScoreFromCriteria(criteria), criteria: canSeeAllLogs(req.user) ? criteria : null });
+  } catch (err) {
+    console.error('Erro em /api/progression/evaluate:', err.message);
+    res.status(500).json({ error: 'Erro ao executar avaliação de progressão.' });
+  }
+});
+
+// =====================================================================
+// EXTRAS — entrevistador e fotos de perfil disponíveis
+// =====================================================================
+// Admin-only: o prompt do entrevistador é IP da Allos e não deve vazar para
+// aluno/visitante.
+app.get('/api/entrevistador-prompt', requireAuth, requireRole('admin'), (req, res) => {
+  const prompt = loadEntrevistadorPrompt();
+  if (!prompt) return res.status(404).json({ error: 'Prompt do entrevistador não configurado.' });
+  res.json({ prompt });
+});
+
+// Extrai os blocos da transcrição da entrevista. Puro parsing (sem IA): o
+// cliente manda o que o entrevistador escreveu e recebe de volta o Bloco 2
+// (persona), o Bloco 1 (gabarito) e os metadados sugeridos.
+app.post('/api/entrevistador/extract', requireAuth, requireRole('admin'), (req, res) => {
+  const { text, messages } = req.body || {};
+  // Aceita o texto pronto ou a lista de mensagens (concatena só as do assistente).
+  let source = typeof text === 'string' ? text : '';
+  if (!source && Array.isArray(messages)) {
+    source = messages
+      .filter((m) => m && m.role === 'assistant' && typeof m.content === 'string')
+      .map((m) => m.content)
+      .join('\n\n');
+  }
+  if (!source.trim()) return res.status(400).json({ error: 'Envie `text` ou `messages` com a transcrição da entrevista.' });
+  res.json(extractBlocos(source));
+});
+
+// Cria o personagem de Simulação a partir da entrevista, em um passo só.
+// O admin pode sobrescrever qualquer campo sugerido (name/age/description) e,
+// se quiser, mandar os blocos já editados à mão.
+app.post('/api/entrevistador/character', requireAuth, requireRole('admin'), async (req, res) => {
+  const body = req.body || {};
+  let bloco2 = typeof body.specificInstruction === 'string' ? body.specificInstruction.trim() : '';
+  let bloco1 = typeof body.evaluationCriteria === 'string' ? body.evaluationCriteria.trim() : '';
+  let meta = {};
+
+  // Sem os blocos prontos, extrai da transcrição.
+  if (!bloco2) {
+    const source = typeof body.text === 'string'
+      ? body.text
+      : (Array.isArray(body.messages)
+        ? body.messages.filter((m) => m && m.role === 'assistant' && typeof m.content === 'string').map((m) => m.content).join('\n\n')
+        : '');
+    if (!source.trim()) return res.status(400).json({ error: 'Envie `specificInstruction` ou a transcrição (`text`/`messages`).' });
+    const ex = extractBlocos(source);
+    if (!ex.ready) {
+      return res.status(422).json({ error: 'O entrevistador ainda não gerou o prompt do paciente (seção "## [I. CONTENÇÃO]").' });
+    }
+    bloco2 = ex.bloco2;
+    if (!bloco1) bloco1 = ex.bloco1;
+    meta = ex.meta;
+  }
+
+  const name = String(body.name != null ? body.name : meta.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name é obrigatório' });
+
+  const rawAge = body.age != null && body.age !== '' ? Number(body.age) : meta.age;
+  const age = Number.isFinite(rawAge) && rawAge > 0 && rawAge <= 120 ? Math.floor(rawAge) : null;
+  const description = String(body.description != null ? body.description : meta.description || '').trim();
+
+  const created = await withFileLock('freeplay-characters.json', () => {
+    const chars = readJSON('freeplay-characters.json');
+    const c = {
+      id: 'fp' + Date.now() + '-' + crypto.randomBytes(3).toString('hex'),
+      name,
+      age,
+      description,
+      assistantId: '',
+      specificInstruction: bloco2,
+      evaluationCriteria: bloco1,  // Bloco 1 vira o gabarito do avaliador.
+    };
+    chars.push(c);
+    writeJSON('freeplay-characters.json', chars);
+    return c;
+  });
+  res.json(created);
+});
+
+app.get('/api/profile-photos', requireAuth, (req, res) => {
+  const dir = path.join(__dirname, '..', 'profiles_icon');
+  if (!fs.existsSync(dir)) return res.json([]);
+  const files = fs.readdirSync(dir).filter((f) => /\.(png|jpe?g|webp)$/i.test(f));
+  res.json(files.map((f) => `/profiles_icon/${f}`));
+});
+
+// Healthcheck do Railway (sem auth). Confirma que o processo está de pé e que o
+// volume de dados está montado e gravável — um deploy com volume errado falha aqui
+// em vez de servir a aplicação com um DATA_DIR efêmero.
+app.get('/api/health', (req, res) => {
+  let dataWritable = false;
+  try {
+    fs.accessSync(DATA_DIR, fs.constants.W_OK);
+    dataWritable = true;
+  } catch {}
+  const ok = dataWritable;
+  res.status(ok ? 200 : 503).json({
+    ok,
+    uptime: Math.floor(process.uptime()),
+    dataDir: DATA_DIR,
+    dataWritable,
+    openai: !!process.env.OPENAI_API_KEY,
+    evaluator: evaluatorEnabled(),
+  });
 });
 
 // =====================================================================
@@ -885,6 +2202,8 @@ if (fs.existsSync(clientDist)) {
 if (require.main === module) {
   const removed = pruneExpiredLogs();
   if (removed > 0) console.log(`[logs] ${removed} log(s) expirado(s) removido(s) no boot.`);
+  const duelsRemoved = pruneExpiredDuels();
+  if (duelsRemoved > 0) console.log(`[duels] ${duelsRemoved} duelo(s) expirado(s) removido(s) no boot.`);
   const PORT = process.env.PORT || 3001;
   app.listen(PORT, () => console.log(`Servidor Genus Práxis rodando na porta ${PORT}`));
 }

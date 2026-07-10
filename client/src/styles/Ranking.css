@@ -1,0 +1,23 @@
+/* Ranking.css — pill de título por tier no ranking. Tema laranja do Genus.
+   Escopado sob .ranking-page para não vazar. */
+
+.ranking-page .player-title {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+  border: 1px solid var(--border-2);
+  background: var(--surface-2);
+  color: var(--text-soft);
+}
+.ranking-page .player-title.tier-bronze   { color: #d98a6a; border-color: #B85A40; background: rgba(184, 90, 64, 0.12); }
+.ranking-page .player-title.tier-silver   { color: #b7bcc4; border-color: #8a9097; background: rgba(138, 144, 151, 0.14); }
+.ranking-page .player-title.tier-gold     { color: #d9b45e; border-color: #c8a04e; background: rgba(200, 160, 78, 0.16); }
+.ranking-page .player-title.tier-platinum { color: var(--orange); border-color: var(--orange); background: rgba(255, 98, 0, 0.12); }
+
+/* Realce da linha do próprio jogador */
+.ranking-page tr.me td { background: rgba(255, 98, 0, 0.07); }

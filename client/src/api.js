@@ -75,22 +75,42 @@ const realApi = {
     if (data && data.token) setToken(data.token);
     return data && data.user ? data.user : data;
   },
+  loginVisitor: async () => {
+    const data = await request('/login/visitor', { method: 'POST', body: {} });
+    if (data && data.token) setToken(data.token);
+    return data && data.user ? data.user : data;
+  },
+  logout: () => { clearAuth(); },
   me: () => request('/me'),
   changeMyPassword: (currentPassword, newPassword) =>
     request('/me/password', { method: 'POST', body: { currentPassword, newPassword } }),
+  // Título (subtítulo) ativo exibido no perfil/ranking. titleId vazio limpa.
+  setMyTitle: (titleId) => request('/me/title', { method: 'POST', body: { titleId } }),
 
   // Perfil
   getUser: (id) => request(`/users/${id}`),
   updateUser: (id, data) => request(`/users/${id}`, { method: 'PUT', body: data }),
+  getProfilePhotos: () => request('/profile-photos'),
 
-  // Personagens da simulação
-  getCharacters: () => request('/characters'),
-  createCharacter: (data) => request('/characters', { method: 'POST', body: data }),
-  updateCharacter: (id, data) => request(`/characters/${id}`, { method: 'PUT', body: data }),
-  deleteCharacter: (id) => request(`/characters/${id}`, { method: 'DELETE' }),
-  setCharacterPhoto: (id, data) => request(`/characters/${id}/photo`, { method: 'PUT', body: data }),
+  // Personagens da simulação (freeplay). Só freeplay tem foto.
+  getFreeplay: () => request('/freeplay'),
+  createFreeplay: (data) => request('/freeplay', { method: 'POST', body: data }),
+  updateFreeplay: (id, data) => request(`/freeplay/${id}`, { method: 'PUT', body: data }),
+  deleteFreeplay: (id) => request(`/freeplay/${id}`, { method: 'DELETE' }),
+  setFreeplayPhoto: (id, data) => request(`/freeplay/${id}/photo`, { method: 'PUT', body: data }),
 
-  // Logs
+  // Exercícios da trilha de competências
+  getExercises: () => request('/exercises'),
+  createExercise: (data) => request('/exercises', { method: 'POST', body: data }),
+  updateExercise: (id, data) => request(`/exercises/${id}`, { method: 'PUT', body: data }),
+  deleteExercise: (id) => request(`/exercises/${id}`, { method: 'DELETE' }),
+
+  // Progresso da trilha
+  getProgress: (userId) => request(`/progress/${userId}`),
+  saveProgress: (userId, data) => request(`/progress/${userId}`, { method: 'POST', body: data }),
+
+  // Logs. POST exige `type` ('exercise'|'freeplay') e aceita `mode`
+  // ('competitive'|'training') — freeplay+competitive alimenta o MMR.
   getLogs: (userId) => request(`/logs${userId ? `?userId=${encodeURIComponent(userId)}` : ''}`),
   saveLog: (data) => request('/logs', { method: 'POST', body: data }),
   getLogsPolicy: () => request('/logs/policy'),
@@ -98,11 +118,76 @@ const realApi = {
 
   // Chat da simulação (o servidor resolve o system prompt via context: { type, itemId })
   chat: (messages, context) => request('/chat', { method: 'POST', body: { messages, context } }),
-  // Avaliação (estrutura pronta; desligada por padrão → { disabled: true })
+  // Avaliação (estrutura pronta; desligada por padrão → { disabled: true }).
+  // Resposta: { role, content, score } — e, só para supervisor/admin,
+  // também { criteriaScores, reasoning }.
   evaluate: (messages, context) => request('/evaluate', { method: 'POST', body: { messages, context } }),
   transcribe: (audioBase64) => request('/transcribe', { method: 'POST', body: { audio: audioBase64 } }),
 
+  // Indicadores (constância, objetivos diários, conquistas)
+  getGamification: (userId) => request(`/gamification/${userId}`),
+
+  // Ranking global (403 para visitante) e MMR competitivo do próprio usuário
+  getRanking: () => request('/ranking'),
+  getMyMmr: () => request('/me/mmr'),
+  adminResetRanking: () => request('/admin/ranking/reset', { method: 'POST' }),
+
+  // Professor: alunos vinculados
+  getMyStudents: () => request('/teacher/students'),
+
+  // --- Entrevistador (construção de personagem, admin-only) ---
+  getEntrevistadorPrompt: () => request('/entrevistador-prompt'),
+  // Conversa com o entrevistador. O prompt é resolvido no servidor.
+  entrevistadorChat: (messages) =>
+    request('/chat', { method: 'POST', body: { messages, mode: 'entrevistador' } }),
+  // Parsing dos blocos a partir da transcrição (sem IA).
+  // → { ready, bloco1, bloco2, meta: { name, age, description } }
+  extractBlocos: (messages) => request('/entrevistador/extract', { method: 'POST', body: { messages } }),
+  // Cria o personagem de Simulação. Bloco 2 → specificInstruction,
+  // Bloco 1 → evaluationCriteria (gabarito do avaliador).
+  createCharacterFromInterview: (data) =>
+    request('/entrevistador/character', { method: 'POST', body: data }),
+
+  // --- Duelos (avaliação comparada entre dois alunos) ---
+  getDuelOpponents: () => request('/duel/opponents'),
+  // data: { characterId, opponentUserId?, inviteMethod: 'system'|'whatsapp' }
+  createDuel: (data) => request('/duel', { method: 'POST', body: data }),
+  getDuel: (id) => request(`/duel/${id}`),
+  getDuelByToken: (token) => request(`/duel/by-token/${encodeURIComponent(token)}`),
+  acceptDuelByToken: (token) => request(`/duel/by-token/${encodeURIComponent(token)}/accept`, { method: 'POST', body: {} }),
+  acceptDuel: (id) => request(`/duel/${id}/accept`, { method: 'POST', body: {} }),
+  submitDuel: (id, data) => request(`/duel/${id}/submit`, { method: 'POST', body: data }),
+  cancelDuel: (id) => request(`/duel/${id}`, { method: 'DELETE' }),
+  // Baixa o log do duelo como arquivo (o servidor responde com attachment).
+  exportDuelLog: async (id) => {
+    const token = getToken();
+    const res = await fetch(`${BASE}/duel/${encodeURIComponent(id)}/export`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      let err = 'Erro ao baixar o log';
+      try { const j = await res.json(); err = j.error || err; } catch {}
+      throw new Error(err);
+    }
+    const dispo = res.headers.get('content-disposition') || '';
+    const match = dispo.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : `duelo-${id}.txt`;
+    const blob = await res.blob();
+    return { blob, filename };
+  },
+  getSocialLogs: () => request('/duels/social'),
+
+  // --- Progressão (evolução entre atendimentos repetidos do mesmo paciente) ---
+  getProgressionPatients: () => request('/progression/available-patients'),
+  evaluateProgression: (data) => request('/progression/evaluate', { method: 'POST', body: data }),
+
+  // --- Notificações in-app (visitante não recebe) ---
+  getNotifications: () => request('/notifications'),
+  markNotificationRead: (id) => request(`/notifications/${id}/read`, { method: 'POST', body: {} }),
+  markAllNotificationsRead: () => request('/notifications/read-all', { method: 'POST', body: {} }),
+
   // Sessões ativas (persistência de sessão não finalizada)
+  listActiveSessions: () => request('/active-sessions'),
   getActiveSession: (type, itemId) => request(`/active-sessions/${type}/${encodeURIComponent(itemId)}`),
   saveActiveSession: (type, itemId, data) =>
     request(`/active-sessions/${type}/${encodeURIComponent(itemId)}`, { method: 'PUT', body: data }),

@@ -24,9 +24,17 @@ export default function AdminUsers({ user: currentUser }) {
   const [evalEnabled, setEvalEnabled] = useState(false);
   const [evalSaving, setEvalSaving] = useState(false);
   const [evalError, setEvalError] = useState('');
+  const [visitorEvalEnabled, setVisitorEvalEnabled] = useState(false);
+  const [visitorEvalSaving, setVisitorEvalSaving] = useState(false);
+  const [visitorEvalError, setVisitorEvalError] = useState('');
 
   useEffect(() => {
-    api.getSettings().then((s) => setEvalEnabled(!!s.evaluatorEnabled)).catch(() => {});
+    api.getSettings()
+      .then((s) => {
+        setEvalEnabled(!!s.evaluatorEnabled);
+        setVisitorEvalEnabled(!!s.visitorEvaluationEnabled);
+      })
+      .catch(() => {});
   }, []);
 
   async function toggleEvaluator() {
@@ -39,6 +47,19 @@ export default function AdminUsers({ user: currentUser }) {
       setEvalError(err.message || 'Erro ao salvar configuração.');
     } finally {
       setEvalSaving(false);
+    }
+  }
+
+  async function toggleVisitorEvaluation() {
+    if (visitorEvalSaving) return;
+    setVisitorEvalSaving(true); setVisitorEvalError('');
+    try {
+      const s = await api.adminUpdateSettings({ visitorEvaluationEnabled: !visitorEvalEnabled });
+      setVisitorEvalEnabled(!!s.visitorEvaluationEnabled);
+    } catch (err) {
+      setVisitorEvalError(err.message || 'Erro ao salvar configuração.');
+    } finally {
+      setVisitorEvalSaving(false);
     }
   }
 
@@ -171,13 +192,36 @@ export default function AdminUsers({ user: currentUser }) {
           </div>
           <p className="settings-row-desc">
             Quando <strong>desligada</strong>, ao finalizar a sessão o aluno vê a tela de agradecimento e o log é salvo
-            para análise humana. Quando <strong>ligada</strong>, a IA avalia a sessão (requer o prompt em
-            <code> server/avaliacao/avaliador.md</code> e a <code>OPENAI_API_KEY</code>).
+            para análise humana. Quando <strong>ligada</strong>, a IA avalia a sessão (requer a <code>OPENAI_API_KEY</code>).
           </p>
           {evalError && <div className="alert error" style={{ marginTop: 8, marginBottom: 0 }}>{evalError}</div>}
         </div>
         <button className={`btn ${evalEnabled ? 'btn-outline' : 'btn-primary'}`} onClick={toggleEvaluator} disabled={evalSaving}>
           {evalSaving ? 'Salvando…' : (evalEnabled ? 'Desligar' : 'Ligar')}
+        </button>
+      </div>
+
+      {/* Avaliação do visitante: custo de IA para sessões anônimas. Só faz efeito
+          com a avaliação automática ligada. */}
+      <div className="card settings-row">
+        <div style={{ maxWidth: 640 }}>
+          <div className="settings-row-title">
+            Avaliar sessões de visitante
+            <span className={`pill-status ${visitorEvalEnabled ? 'on' : 'off'}`}>{visitorEvalEnabled ? 'LIGADA' : 'DESLIGADA'}</span>
+          </div>
+          <p className="settings-row-desc">
+            Visitantes têm sessão temporária e não pontuam. Por padrão eles <strong>não</strong> são avaliados,
+            para não gastar chamadas de IA com acessos anônimos. Ligue para que também recebam a devolutiva.
+            {!evalEnabled && <> Sem efeito enquanto a <strong>avaliação automática</strong> estiver desligada.</>}
+          </p>
+          {visitorEvalError && <div className="alert error" style={{ marginTop: 8, marginBottom: 0 }}>{visitorEvalError}</div>}
+        </div>
+        <button
+          className={`btn ${visitorEvalEnabled ? 'btn-outline' : 'btn-primary'}`}
+          onClick={toggleVisitorEvaluation}
+          disabled={visitorEvalSaving}
+        >
+          {visitorEvalSaving ? 'Salvando…' : (visitorEvalEnabled ? 'Desligar' : 'Ligar')}
         </button>
       </div>
 

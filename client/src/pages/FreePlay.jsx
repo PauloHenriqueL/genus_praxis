@@ -4,8 +4,9 @@ import { api, assetUrl } from '../api';
 import Typewriter from '../components/Typewriter';
 import ScoreBadge from '../components/ScoreBadge';
 import { PatientAvatar } from '../components/PatientAvatar';
+import '../styles/Play.css';
 
-export default function Simulacao({ user }) {
+export default function FreePlay({ user }) {
   const [characters, setCharacters] = useState([]);
   const [bestScores, setBestScores] = useState({});
   const [attended, setAttended] = useState(() => new Set());
@@ -14,8 +15,10 @@ export default function Simulacao({ user }) {
   const navigate = useNavigate();
 
   useEffect(() => {
+    // A fonte de verdade da "melhor nota com este paciente" é o log — o EchoSession
+    // (freeplay) não grava em progress.json, só em logs.json.
     Promise.all([
-      api.getCharacters(),
+      api.getFreeplay(),
       user?.id ? api.getLogs(user.id) : Promise.resolve([]),
     ])
       .then(([chars, logs]) => {
@@ -23,10 +26,13 @@ export default function Simulacao({ user }) {
         const max = {};
         const seen = new Set();
         for (const l of logs || []) {
+          if (l.type !== 'freeplay') continue;
           if (!l.itemId) continue;
           seen.add(String(l.itemId));
           if (!Number.isFinite(l.score)) continue;
-          if (max[l.itemId] === undefined || l.score > max[l.itemId]) max[l.itemId] = l.score;
+          if (max[l.itemId] === undefined || l.score > max[l.itemId]) {
+            max[l.itemId] = l.score;
+          }
         }
         setBestScores(max);
         setAttended(seen);
@@ -34,6 +40,8 @@ export default function Simulacao({ user }) {
       .catch((err) => setError(err.message || 'Erro ao carregar personagens'))
       .finally(() => setLoading(false));
   }, [user]);
+
+  const open = (id) => navigate(`/chat/freeplay/${id}`);
 
   return (
     <div>
@@ -63,19 +71,32 @@ export default function Simulacao({ user }) {
             const charBest = bestScores[char.id];
             const isReturn = attended.has(String(char.id));
             return (
-              <div key={char.id} className="character-card" onClick={() => navigate(`/chat/simulacao/${char.id}`)} role="button" tabIndex={0}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') navigate(`/chat/simulacao/${char.id}`); }}>
+              <div
+                key={char.id}
+                className="character-card"
+                onClick={() => open(char.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') open(char.id); }}
+              >
                 <div className="character-card-top">
                   <PatientAvatar name={char.name} iconUrl={assetUrl(char.photoIcon)} size={72} className="character-card-photo" />
                   <div className="character-card-meta">
                     <div className="character-card-header">
                       <h3>{char.name}</h3>
-                      {Number.isFinite(charBest) && <span title="Sua maior nota com este paciente"><ScoreBadge score={charBest} /></span>}
+                      {Number.isFinite(charBest) && (
+                        <span title="Sua maior nota com este paciente"><ScoreBadge score={charBest} /></span>
+                      )}
                     </div>
                     {char.age != null && char.age !== '' && <div className="age">{char.age} anos</div>}
                   </div>
                 </div>
                 {char.description && <p>{char.description}</p>}
+                {Number.isFinite(char.difficulty) && (
+                  <div className="difficulty-tag" title="Dificuldade atual deste paciente (1–100), ajustada pelo desempenho coletivo no modo competitivo">
+                    DIFICULDADE: <strong>{char.difficulty}</strong>
+                  </div>
+                )}
                 {isReturn && (
                   <div className="progression-tag" title="Você já atendeu este paciente">↩ Reatendimento</div>
                 )}

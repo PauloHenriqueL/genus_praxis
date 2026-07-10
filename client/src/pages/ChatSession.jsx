@@ -1,28 +1,38 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { api, assetUrl } from '../api';
+import { api } from '../api';
 import { loadActiveSession, saveLocal, clearActiveSession } from '../sessionStore';
 import ScoreBadge from '../components/ScoreBadge';
-import { PatientAvatarButton } from '../components/PatientAvatar';
 import LogActions from '../components/LogActions';
-import { makeLogItems, evalSection as evalSectionTxt } from '../logFiles';
+import CriteriaTable from '../components/CriteriaTable';
+import { makeLogItems, evalSection as evalSectionTxt, downloadText, hasTranscript } from '../logFiles';
 import { nextActiveElapsed, SESSION_LIMIT_SECONDS, SESSION_LIMIT_MINUTES } from '../sessionLimit';
+import { SKILL_NAMES } from '../utils/skills';
+import '../styles/Session.css';
 
-const SESSION_TYPE = 'simulacao';
-
-// Mensagem invisível enviada à IA no "time skip" entre sessões.
-const SKIP_PROMPT = 'O usuário finalizou a sessão de hoje. Agora passaremos para a próxima sessão. Você (o paciente) acaba de entrar na sessão novamente, na próxima semana. Descreva o que aconteceu na sua semana; você já está na sala novamente com o terapeuta.';
-const SKIP_MIN_DELAY_MS = 2200;
+// Sessão de EXERCÍCIO da Trilha de Competências (single-session, sem time skip).
+// Rota: /chat/exercise/:id. O paciente do exercício abre a conversa; ao finalizar,
+// o servidor avalia (avaliador global OU o evaluatorPrompt customizado do exercício,
+// escolhido server-side pelo context) e o log é salvo com type:'exercise'.
+const SESSION_TYPE = 'exercise';
 const SAVE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-// Monta a mensagem (role: user) enviada ao avaliador com a transcrição.
-function buildEvaluationMessage(characterName, transcript) {
-  return `[LOG DO ATENDIMENTO]\nPersonagem: ${characterName}\n\n${transcript}`;
+const DIFFICULTY_LABEL = {
+  iniciante: 'Iniciante',
+  intermediario: 'Intermediário',
+  avancado: 'Avançado',
+};
+
+// Mensagem (role: user) enviada ao avaliador com a transcrição.
+function buildEvaluationMessage(exerciseTitle, transcript) {
+  return `[LOG DO ATENDIMENTO — EXERCÍCIO]\nExercício: ${exerciseTitle}\n\n${transcript}`;
 }
 
 export default function ChatSession({ user }) {
   const { id } = useParams();
   const navigate = useNavigate();
+
+  const canSeeReasoning = user?.role === 'supervisor' || user?.role === 'admin';
 
   const [item, setItem] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -40,10 +50,6 @@ export default function ChatSession({ user }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [showSaveLoad, setShowSaveLoad] = useState(false);
 
-  const [sessionNumber, setSessionNumber] = useState(1);
-  const [confirmingSkip, setConfirmingSkip] = useState(false);
-  const [skipping, setSkipping] = useState(false);
-
   // Pós-sessão
   const [savingLog, setSavingLog] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -51,6 +57,8 @@ export default function ChatSession({ user }) {
   const [evalError, setEvalError] = useState('');
   const [evaluationText, setEvaluationText] = useState('');
   const [evalScore, setEvalScore] = useState(null);
+  const [criteriaScores, setCriteriaScores] = useState(null); // supervisor/admin
+  const [reasoning, setReasoning] = useState('');             // supervisor/admin
 
   // Avaliador ligado? (por padrão NÃO — encerra com agradecimento.)
   const [evaluatorEnabled, setEvaluatorEnabled] = useState(false);
@@ -74,39 +82,39 @@ export default function ChatSession({ user }) {
     return () => { cancelled = true; };
   }, []);
 
-  // Carrega personagem + tenta restaurar sessão ativa (F5 / sair e voltar).
+  // Carrega exercício + tenta restaurar sessão ativa (F5 / sair e voltar).
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const list = await api.getCharacters();
+        const list = await api.getExercises();
         const found = list.find((i) => String(i.id) === String(id));
         if (cancelled) return;
-        if (!found) { setError('Personagem não encontrado.'); return; }
+        if (!found) { setError('Exercício não encontrado.'); return; }
         setItem(found);
-        if (!restoredRef.current && user?.id) {
+        if (!restoredRef.current && user?.id && user.role !== 'visitor') {
           restoredRef.current = true;
           const saved = await loadActiveSession(user.id, SESSION_TYPE, id);
           if (cancelled) return;
           if (saved && Array.isArray(saved.messages) && saved.messages.length > 0) {
             setMessages(saved.messages);
             setElapsed(saved.elapsedSeconds || 0);
-            if (Number.isFinite(saved.sessionNumber) && saved.sessionNumber >= 1) setSessionNumber(saved.sessionNumber);
             setSessionStarted(true);
           }
         }
       } catch (err) {
-        if (!cancelled) setError(err.message || 'Erro ao carregar personagem.');
+        if (!cancelled) setError(err.message || 'Erro ao carregar exercício.');
       }
     }
     load();
     return () => { cancelled = true; };
   }, [id, user?.id]);
 
-  // Autosave: localStorage síncrono + servidor com debounce.
+  // Autosave: localStorage síncrono + servidor com debounce. Visitantes não persistem.
   useEffect(() => {
     if (!sessionStarted || sessionEnded || !item || !user?.id || finishedRef.current) return;
-    const data = { messages, elapsedSeconds: elapsed, itemTitle: item.name, sessionNumber };
+    if (user.role === 'visitor') return;
+    const data = { messages, elapsedSeconds: elapsed, itemTitle: item.title };
     sessionDataRef.current = data;
     saveLocal(user.id, SESSION_TYPE, id, data);
     if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
@@ -115,11 +123,11 @@ export default function ChatSession({ user }) {
       api.saveActiveSession(SESSION_TYPE, id, data).catch(() => {});
     }, 1500);
     return () => { if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current); };
-  }, [messages, elapsed, sessionStarted, sessionEnded, item, sessionNumber, user?.id, id]);
+  }, [messages, elapsed, sessionStarted, sessionEnded, item, user?.id, id]);
 
   // Flush ao trocar de rota / fechar aba / background.
   useEffect(() => {
-    if (!sessionStarted || sessionEnded || !user?.id) return;
+    if (!sessionStarted || sessionEnded || !user?.id || user.role === 'visitor') return;
     function flush() {
       if (finishedRef.current) return;
       const data = sessionDataRef.current;
@@ -204,38 +212,6 @@ export default function ChatSession({ user }) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(input); }
   }
 
-  function handleSkipSession() {
-    if (!sessionStarted || sessionEnded || isTyping || skipping || limitReached) return;
-    setConfirmingSkip(true);
-  }
-
-  async function doSkipSession() {
-    setConfirmingSkip(false);
-    if (!sessionStarted || sessionEnded || isTyping || skipping) return;
-    // Calcula a partir do estado atual (o guard `skipping` impede skips
-    // concorrentes) — não depende do updater do setState, que no React 18 não
-    // roda de forma síncrona e deixaria o número do marcador indefinido.
-    const newNumber = sessionNumber + 1;
-    setSessionNumber(newNumber);
-    setSkipping(true);
-    const breakMarker = { type: 'session-break', sessionNumber: newNumber, stage: 'transitioning' };
-    const hiddenSkip = { role: 'user', content: SKIP_PROMPT, isSystem: true, highlighted: false, comment: '' };
-    setMessages([...messages, breakMarker, hiddenSkip]);
-    setIsTyping(true);
-    const minDelay = new Promise((r) => setTimeout(r, SKIP_MIN_DELAY_MS));
-    const flip = (m) => (m && m.type === 'session-break' && m.sessionNumber === newNumber ? { ...m, stage: 'arrived' } : m);
-    try {
-      const [reply] = await Promise.all([sendToAI(SKIP_PROMPT, messages), minDelay]);
-      setMessages((prev) => prev.map(flip).concat({ role: 'assistant', content: reply }));
-    } catch (err) {
-      setMessages((prev) => prev.map(flip).concat({ role: 'assistant', content: `Erro ao retomar a sessão: ${err.message}` }));
-    } finally {
-      setIsTyping(false);
-      setSkipping(false);
-      textareaRef.current?.focus();
-    }
-  }
-
   function doReset() {
     setConfirmingReset(false);
     finishedRef.current = true;
@@ -243,20 +219,20 @@ export default function ChatSession({ user }) {
     if (timerRef.current) clearInterval(timerRef.current);
     sessionDataRef.current = null;
     clearActiveSession(user.id, SESSION_TYPE, id);
-    setMessages([]); setInput(''); setElapsed(0); setSessionNumber(1); setSessionStarted(false); setError('');
+    setMessages([]); setInput(''); setElapsed(0); setSessionStarted(false); setError('');
     setTimeout(() => { finishedRef.current = false; }, 0);
   }
 
   function downloadSave() {
     const save = {
-      genusSave: true, version: 1, type: SESSION_TYPE, itemId: String(id), itemTitle: item?.name || '',
-      messages, elapsedSeconds: elapsed, sessionNumber, savedAt: new Date().toISOString(),
+      genusSave: true, version: 1, type: SESSION_TYPE, itemId: String(id), itemTitle: item?.title || '',
+      messages, elapsedSeconds: elapsed, savedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(save, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `genus-save-${(item?.name || 'sessao').replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `genus-save-exercicio-${(item?.title || 'sessao').replace(/\s+/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -270,13 +246,12 @@ export default function ChatSession({ user }) {
       try {
         const save = JSON.parse(reader.result);
         if (!save || save.genusSave !== true || !Array.isArray(save.messages)) throw new Error('Arquivo de save inválido.');
-        if (save.type !== SESSION_TYPE || String(save.itemId) !== String(id)) throw new Error('Este save é de outro personagem. Abra o personagem correspondente para carregá-lo.');
+        if (save.type !== SESSION_TYPE || String(save.itemId) !== String(id)) throw new Error('Este save é de outro exercício. Abra o exercício correspondente para carregá-lo.');
         const savedAt = new Date(save.savedAt || 0).getTime();
         if (Number.isFinite(savedAt) && savedAt > 0 && Date.now() - savedAt > SAVE_TTL_MS) throw new Error('Este save expirou — saves valem por 30 dias.');
         finishedRef.current = false;
         setMessages(save.messages);
         setElapsed(Number.isFinite(save.elapsedSeconds) ? save.elapsedSeconds : 0);
-        if (Number.isFinite(save.sessionNumber) && save.sessionNumber >= 1) setSessionNumber(save.sessionNumber);
         setSessionStarted(true);
         setError('');
       } catch (err) {
@@ -288,23 +263,37 @@ export default function ChatSession({ user }) {
 
   // Builders de texto (copiar/baixar).
   function buildLogHeader() {
-    return [`Terapeuta: ${user?.name || '—'}`, `Paciente: ${item?.name || '—'}`, `Sessões: ${sessionNumber}`].join('\n');
+    return [
+      `Trilha · ${SKILL_NAMES[item?.skillId] || `Competência ${item?.skillId || '—'}`}`,
+      `Exercício: ${item?.title || '—'}`,
+      `Dificuldade: ${DIFFICULTY_LABEL[item?.difficulty] || '—'}`,
+      `Aluno: ${user?.name || '—'}`,
+      `Duração: ${formatTime(elapsed)}`,
+      evalScore !== null ? `Nota final: ${evalScore}` : null,
+    ].filter(Boolean).join('\n');
   }
   function buildTranscript() {
-    return messages.filter((m) => !m.isSystem && !m.type).map((m) => {
-      const author = m.role === 'user' ? (user?.name || 'Terapeuta') : (item?.name || 'Paciente');
+    return messages.filter((m) => !m.isSystem).map((m) => {
+      const author = m.role === 'user' ? (user?.name || 'Aluno') : (item?.title || 'Paciente');
       const star = m.highlighted ? ' ★' : '';
       const comment = m.highlighted && m.comment ? `\n   {${m.comment}}` : '';
       return `[${author}${star}]\n${m.content}${comment}`;
     }).join('\n\n---\n\n');
   }
-  function buildEvaluationBody() {
-    const score = evalScore !== null ? `Nota final: ${evalScore}\n\n` : '';
-    return `${score}${(evaluationText || '').trim()}`;
-  }
   const logText = () => `${buildLogHeader()}\n\n---\n\n${buildTranscript()}`;
-  const evalText = () => `${buildLogHeader()}${evalSectionTxt(buildEvaluationBody())}`.trimEnd();
-  const bothText = () => `${buildLogHeader()}\n\n---\n\n${buildTranscript()}${evalSectionTxt(buildEvaluationBody())}`;
+  const evalText = () => `${buildLogHeader()}${evalSectionTxt((evaluationText || '').trim())}`.trimEnd();
+  const bothText = () => `${buildLogHeader()}\n\n---\n\n${buildTranscript()}${evalSectionTxt((evaluationText || '').trim())}`;
+
+  // Há conversa de verdade? (a de kickoff é `isSystem`). Ver logFiles.js.
+  const showLogButton = hasTranscript(messages);
+
+  // Atalho no cabeçalho: baixa o log sem precisar finalizar a sessão. Durante o
+  // atendimento ainda não há avaliação, e `evalSection('')` devolve '' — então
+  // `bothText()` vira só o log.
+  function downloadLog() {
+    const base = (item?.title || 'exercicio').replace(/\s+/g, '_');
+    downloadText(`trilha-${base}-${new Date().toISOString().slice(0, 10)}.txt`, bothText());
+  }
 
   function handleFinalize() {
     if (!sessionStarted || sessionEnded) return;
@@ -315,7 +304,7 @@ export default function ChatSession({ user }) {
     setConfirmingFinalize(false);
     if (!sessionStarted || sessionEnded) return;
     finishedRef.current = true;
-    const visibleMessages = messages.filter((m) => !m.isSystem && !m.type);
+    const visibleMessages = messages.filter((m) => !m.isSystem);
     if (timerRef.current) clearInterval(timerRef.current);
 
     if (visibleMessages.length === 0) {
@@ -331,27 +320,30 @@ export default function ChatSession({ user }) {
     setEvalError('');
 
     const transcriptText = visibleMessages.map((m) => {
-      const author = m.role === 'user' ? user.name : (item?.name || 'Paciente');
+      const author = m.role === 'user' ? user.name : (item?.title || 'Paciente');
       const star = m.highlighted ? ' ★' : '';
       const comment = m.highlighted && m.comment ? `\n   {${m.comment}}` : '';
       return `[${author}${star}]\n${m.content}${comment}`;
     }).join('\n\n---\n\n');
 
-    // 1. Avaliação — só quando o avaliador está LIGADO. Estrutura pronta:
-    //    quando ligado, chama /api/evaluate; o servidor injeta o gabarito e
-    //    devolve o texto da avaliação.
+    // 1. Avaliação — só quando o avaliador está LIGADO. O servidor escolhe o
+    //    avaliador global OU o evaluatorPrompt customizado do exercício (pelo
+    //    context) e injeta o gabarito. Não é stream: recebemos o texto completo.
     let evalContent = '';
     let totalScore = null;
+    let critScores = null;
     if (evaluatorEnabled) {
       try {
-        const evalMsg = { role: 'user', content: buildEvaluationMessage(item?.name || '—', transcriptText) };
+        const evalMsg = { role: 'user', content: buildEvaluationMessage(item?.title || '—', transcriptText) };
         const reply = await api.evaluate([evalMsg], { type: SESSION_TYPE, itemId: id });
         if (reply && !reply.disabled) {
           evalContent = typeof reply === 'string' ? reply : reply.content || '';
-          const m = evalContent.match(/\[NOTA:\s*([-+]?\d+(?:[.,]\d+)?)\s*\]/i);
-          if (m) totalScore = Math.round(Number(m[1].replace(',', '.')));
+          if (reply && Number.isFinite(reply.score)) totalScore = reply.score;
           setEvaluationText(evalContent);
           setEvalScore(totalScore);
+          // criteriaScores / reasoning só chegam para supervisor/admin.
+          if (reply && reply.criteriaScores) { critScores = reply.criteriaScores; setCriteriaScores(reply.criteriaScores); }
+          if (reply && reply.reasoning) setReasoning(reply.reasoning);
         }
       } catch (err) {
         setEvalError(err.message || 'Erro ao avaliar a sessão.');
@@ -360,17 +352,19 @@ export default function ChatSession({ user }) {
       }
     }
 
-    // 2. Salva o log no histórico (sempre).
+    // 2. Salva o log no histórico (sempre). O backend recomputa a nota (score)
+    //    e, para exercícios, guarda a dificuldade server-side.
     try {
       const saved = await api.saveLog({
         userId: user.id,
         userName: user.name,
+        type: SESSION_TYPE,
         itemId: id,
-        itemTitle: item.name,
+        itemTitle: item.title,
         messages: visibleMessages.map((m) => ({ role: m.role, content: m.content, highlighted: m.highlighted || false, comment: m.comment || '' })),
         durationSeconds: elapsed,
-        sessionCount: sessionNumber,
         score: totalScore,
+        criteriaScores: critScores,
         evaluation: evalContent,
       });
       if (saved && Number.isFinite(saved.score)) setEvalScore(saved.score);
@@ -378,6 +372,25 @@ export default function ChatSession({ user }) {
       setSaveError(err.message || 'Erro ao salvar o log.');
     } finally {
       setSavingLog(false);
+    }
+
+    // 3. Progresso da trilha: guarda a melhor nota do exercício.
+    if (totalScore !== null && user.role !== 'visitor') {
+      try {
+        const current = await api.getProgress(user.id);
+        const existing = current?.[id];
+        const shouldUpdate = !existing || existing.score == null || totalScore > existing.score;
+        if (shouldUpdate) {
+          await api.saveProgress(user.id, {
+            [id]: {
+              score: totalScore,
+              skillId: item.skillId,
+              difficulty: item.difficulty,
+              completedAt: new Date().toISOString(),
+            },
+          });
+        }
+      } catch { /* progresso é best-effort */ }
     }
 
     clearActiveSession(user.id, SESSION_TYPE, id);
@@ -439,11 +452,11 @@ export default function ChatSession({ user }) {
   // -------- TELA DE LOADING (avaliando — só se avaliador ligado) --------
   if (sessionEnded && evaluating) {
     return (
-      <div className="post-session">
+      <div className="session-page post-session">
         <div className="page-header">
-          <div className="eyebrow">Sessão concluída</div>
-          <h2>Avaliando sua <span className="accent">sessão</span></h2>
-          <p>A análise do atendimento com {item?.name} pode levar alguns segundos.</p>
+          <div className="eyebrow">Exercício concluído</div>
+          <h2>Avaliando seu <span className="accent">atendimento</span></h2>
+          <p>A análise do exercício "{item?.title}" pode levar alguns segundos.</p>
           <div className="ornament" />
         </div>
         <div className="card evaluating-card">
@@ -458,16 +471,16 @@ export default function ChatSession({ user }) {
     );
   }
 
-  // -------- TELA PÓS-SESSÃO (agradecimento por padrão) --------
+  // -------- TELA PÓS-SESSÃO --------
   if (sessionEnded) {
-    const visibleMessages = messages.filter((m) => !m.isSystem && !m.type);
+    const visibleMessages = messages.filter((m) => !m.isSystem);
     const hasEval = !!(evaluationText || '').trim();
     return (
-      <div className="post-session">
+      <div className="session-page post-session">
         <div className="page-header">
-          <div className="eyebrow">Sessão concluída</div>
-          <h2>Obrigado por <span className="accent">participar</span></h2>
-          <p>Sessão com <strong>{item?.name}</strong> · duração {formatTime(elapsed)} · {sessionNumber} {sessionNumber === 1 ? 'sessão' : 'sessões'}</p>
+          <div className="eyebrow">Exercício concluído</div>
+          <h2>{hasEval ? <>Avaliação do seu <span className="accent">atendimento</span></> : <>Obrigado por <span className="accent">participar</span></>}</h2>
+          <p>Exercício <strong>{item?.title}</strong> · duração {formatTime(elapsed)}</p>
           <div className="ornament" />
         </div>
 
@@ -486,7 +499,7 @@ export default function ChatSession({ user }) {
               </div>
               <p className="thankyou-text">
                 {hasEval
-                  ? 'O log completo desta sessão foi registrado no seu histórico.'
+                  ? 'O log completo deste exercício foi registrado no seu histórico.'
                   : 'Um dos nossos avaliadores recebeu o seu log e fará a análise. Obrigado por participar!'}
               </p>
             </div>
@@ -494,7 +507,6 @@ export default function ChatSession({ user }) {
 
           <div className="post-session-stats">
             <div><span className="post-stat-label">Duração</span><span className="post-stat-value">{formatTime(elapsed)}</span></div>
-            <div><span className="post-stat-label">Sessões</span><span className="post-stat-value">{sessionNumber}</span></div>
             <div><span className="post-stat-label">Mensagens</span><span className="post-stat-value">{visibleMessages.length}</span></div>
             {evalScore !== null && (
               <div><span className="post-stat-label">Nota final</span><ScoreBadge score={evalScore} size="xl" /></div>
@@ -504,18 +516,27 @@ export default function ChatSession({ user }) {
           {hasEval && (
             <div className="post-evaluation">
               <h4>Análise</h4>
-              <div className="post-evaluation-body">{(evaluationText || '').replace(/\[NOTA:[^\]]+\]\s*/gi, '').trim()}</div>
+              <div className="post-evaluation-body">{evaluationText.trim()}</div>
             </div>
+          )}
+
+          {/* Notas por critério + raciocínio — só professor/admin. */}
+          {canSeeReasoning && criteriaScores && <div style={{ marginTop: 14 }}><CriteriaTable criteriaScores={criteriaScores} /></div>}
+          {canSeeReasoning && reasoning && (
+            <details className="supervisor-reasoning">
+              <summary>Raciocínio do avaliador <span className="section-sub">(só professor/admin)</span></summary>
+              <div className="supervisor-reasoning-body">{reasoning}</div>
+            </details>
           )}
 
           {visibleMessages.length > 0 && (
             <div style={{ marginTop: 14 }}>
-              <LogActions items={makeLogItems({ baseName: item?.name || 'sessao', getLog: logText, getEval: hasEval ? evalText : null, getBoth: hasEval ? bothText : null })} />
+              <LogActions items={makeLogItems({ baseName: item?.title || 'exercicio', getLog: logText, getEval: hasEval ? evalText : null, getBoth: hasEval ? bothText : null })} />
             </div>
           )}
 
           <div className="post-session-actions">
-            <button className="btn btn-primary" onClick={() => navigate('/simulacao')}>Voltar à biblioteca</button>
+            <button className="btn btn-primary" onClick={() => navigate('/skills')}>Voltar à trilha</button>
           </div>
         </div>
       </div>
@@ -524,18 +545,19 @@ export default function ChatSession({ user }) {
 
   // -------- TELA DE CHAT --------
   return (
-    <div className="chat-container">
+    <div className="session-page chat-container">
       <div className="chat-header">
         <button onClick={() => navigate(-1)} className="btn btn-outline btn-sm">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
           Voltar
         </button>
 
-        {item?.name && <PatientAvatarButton name={item.name} iconUrl={assetUrl(item.photoIcon)} fullUrl={assetUrl(item.photoFull)} size={42} className="chat-header-avatar" />}
-
         <div className="chat-title">
-          <h3>Sessão com {item?.name || '...'}</h3>
-          <div className="chat-status">Simulação{sessionStarted && <> · <strong>Sessão #{sessionNumber}</strong></>}</div>
+          <h3>{item?.title || '...'}</h3>
+          <div className="chat-status">
+            Trilha · {SKILL_NAMES[item?.skillId] || `Competência ${item?.skillId || ''}`}
+            {item?.difficulty && <> · <span className="difficulty-tag">{DIFFICULTY_LABEL[item.difficulty] || item.difficulty}</span></>}
+          </div>
         </div>
 
         <div className="chat-header-actions">
@@ -545,18 +567,23 @@ export default function ChatSession({ user }) {
               <span>{formatTime(elapsed)}</span>
             </div>
           )}
+          {/* Baixar o log sem finalizar a sessão. Só faz sentido com conversa de
+              verdade — a mensagem de kickoff é `isSystem` e não entra na transcrição. */}
+          {showLogButton && (
+            <button className="btn btn-outline btn-sm" onClick={downloadLog} title="Baixar o log desta sessão (.txt)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              Log
+            </button>
+          )}
           {sessionStarted && (
             <>
-              <button className="btn btn-outline btn-sm" onClick={() => setShowSaveLoad(true)} disabled={isTyping || skipping} title="Guardar ou carregar o progresso desta sessão">
+              <button className="btn btn-outline btn-sm" onClick={() => setShowSaveLoad(true)} disabled={isTyping} title="Guardar ou carregar o progresso deste exercício">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg>
                 Save/Load
               </button>
-              <button className="btn btn-outline btn-sm btn-warn" onClick={() => setConfirmingReset(true)} disabled={isTyping || skipping} title="Reiniciar a simulação do zero">
+              <button className="btn btn-outline btn-sm btn-warn" onClick={() => setConfirmingReset(true)} disabled={isTyping} title="Reiniciar o exercício do zero">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.7 3" /><polyline points="3 3 3 8 8 8" /></svg>
                 Reiniciar
-              </button>
-              <button className="btn btn-sm btn-success" onClick={handleSkipSession} disabled={isTyping || skipping} title="Avançar para a próxima sessão (time skip)">
-                Próxima sessão →
               </button>
               <button className="btn btn-secondary btn-sm" onClick={handleFinalize}>Finalizar e enviar</button>
             </>
@@ -569,36 +596,16 @@ export default function ChatSession({ user }) {
       )}
 
       <div className={`chat-messages ${!sessionStarted ? 'locked' : ''}`}>
-        {messages.filter((m) => !m.isSystem && !m.type).length === 0 && !sessionStarted && (
+        {messages.filter((m) => !m.isSystem).length === 0 && !sessionStarted && (
           <div className="empty-chat">
-            Ao iniciar, {item?.name || 'o paciente'} abre a conversa. Use o botão de destaque (★) para marcar suas próprias intervenções para revisão posterior.
+            Ao iniciar, o paciente do exercício abre a conversa. Use o botão de destaque (★) para marcar suas próprias intervenções para revisão posterior.
           </div>
         )}
 
         {messages.map((msg, i) => {
-          if (msg && msg.type === 'session-break') {
-            const isTransitioning = msg.stage !== 'arrived';
-            return (
-              <div key={i} className={`session-break ${isTransitioning ? 'transitioning' : 'arrived'}`}>
-                <div className="session-break-line" />
-                <div className="session-break-card">
-                  <div className="session-break-badge">Sessão #{msg.sessionNumber}</div>
-                  {isTransitioning ? (
-                    <>
-                      <div className="session-break-text">A sessão foi encerrada. Passando a semana…</div>
-                      <div className="session-break-loader"><span className="dot" /><span className="dot" /><span className="dot" /></div>
-                    </>
-                  ) : (
-                    <div className="session-break-text">Seu paciente chegou para a sessão da próxima semana. Pode iniciar o atendimento.</div>
-                  )}
-                </div>
-                <div className="session-break-line" />
-              </div>
-            );
-          }
           if (msg.isSystem) return null;
           const isUser = msg.role === 'user';
-          const author = isUser ? user.name : (item?.name || 'Paciente');
+          const author = isUser ? user.name : (item?.title || 'Paciente');
           return (
             <div key={i}>
               <div className={`chat-message-row ${msg.role} ${msg.highlighted ? 'highlighted' : ''}`}>
@@ -624,7 +631,7 @@ export default function ChatSession({ user }) {
 
         {isTyping && (
           <div className="chat-message-row assistant">
-            <div className="chat-message-author">{item?.name || 'Paciente'}</div>
+            <div className="chat-message-author">{item?.title || 'Paciente'}</div>
             <div className="chat-message assistant" style={{ fontStyle: 'italic', opacity: 0.7 }}><span className="loading-dots">Pensando</span></div>
           </div>
         )}
@@ -635,7 +642,7 @@ export default function ChatSession({ user }) {
         <div className="start-session-area">
           <div className="start-session-card">
             <h4>Pronto para começar?</h4>
-            <p>Ao iniciar, {item?.name} abrirá a conversa.</p>
+            <p>Ao iniciar, o paciente do exercício abrirá a conversa.</p>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
               <button className="btn btn-primary btn-lg" onClick={handleStartSession} disabled={!item}>Iniciar atendimento</button>
               <button className="btn btn-outline btn-lg" onClick={() => fileInputRef.current?.click()} disabled={!item} title="Retomar a partir de um arquivo de save (.json)">Carregar save</button>
@@ -669,15 +676,15 @@ export default function ChatSession({ user }) {
       <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleLoadSaveFile} style={{ display: 'none' }} />
 
       {showSaveLoad && (() => {
-        const visibleCount = messages.filter((m) => !m.isSystem && !m.type).length;
+        const visibleCount = messages.filter((m) => !m.isSystem).length;
         return (
           <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowSaveLoad(false); }}>
             <div className="modal" style={{ maxWidth: 460 }}>
-              <h3>Progresso da sessão</h3>
+              <h3>Progresso do exercício</h3>
               <p className="modal-text">Guarde o progresso atual num arquivo (.json) para retomar depois, ou carregue um progresso salvo. Carregar substitui a conversa atual.</p>
               <div className="modal-actions">
                 <button type="button" className="btn btn-outline" onClick={() => { setShowSaveLoad(false); fileInputRef.current?.click(); }}>Carregar o progresso</button>
-                <button type="button" className="btn btn-primary" onClick={() => { setShowSaveLoad(false); downloadSave(); }} disabled={visibleCount === 0} title={visibleCount === 0 ? 'A sessão ainda não tem mensagens' : 'Baixar o save desta sessão'}>Guardar o progresso</button>
+                <button type="button" className="btn btn-primary" onClick={() => { setShowSaveLoad(false); downloadSave(); }} disabled={visibleCount === 0} title={visibleCount === 0 ? 'A sessão ainda não tem mensagens' : 'Baixar o save deste exercício'}>Guardar o progresso</button>
               </div>
             </div>
           </div>
@@ -685,16 +692,16 @@ export default function ChatSession({ user }) {
       })()}
 
       {confirmingFinalize && (() => {
-        const visibleCount = messages.filter((m) => !m.isSystem && !m.type).length;
+        const visibleCount = messages.filter((m) => !m.isSystem).length;
         const empty = visibleCount === 0;
         return (
           <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setConfirmingFinalize(false); }}>
             <div className="modal" style={{ maxWidth: 500 }}>
-              <h3>{empty ? 'Sessão vazia' : 'Finalizar e enviar'}</h3>
+              <h3>{empty ? 'Exercício vazio' : 'Finalizar e enviar'}</h3>
               <p className="modal-text">
                 {empty
-                  ? 'A sessão ainda não tem mensagens. Deseja encerrar mesmo assim?'
-                  : 'Tem certeza? O log completo será salvo no seu histórico e enviado para análise. Você não poderá continuar este atendimento depois.'}
+                  ? 'O exercício ainda não tem mensagens. Deseja encerrar mesmo assim?'
+                  : 'Tem certeza? O log completo será salvo no seu histórico e enviado para análise. Você não poderá continuar este exercício depois.'}
               </p>
               <div className="modal-actions">
                 <button type="button" className="btn btn-outline" onClick={() => setConfirmingFinalize(false)}>Cancelar</button>
@@ -708,24 +715,11 @@ export default function ChatSession({ user }) {
       {confirmingReset && (
         <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setConfirmingReset(false); }}>
           <div className="modal" style={{ maxWidth: 460 }}>
-            <h3>Reiniciar simulação</h3>
-            <p className="modal-text">Tem certeza? Toda a conversa, o tempo decorrido e o número da sessão serão <strong>perdidos</strong> e você voltará à tela de início. Esta ação não pode ser desfeita.</p>
+            <h3>Reiniciar exercício</h3>
+            <p className="modal-text">Tem certeza? Toda a conversa e o tempo decorrido serão <strong>perdidos</strong> e você voltará à tela de início. Esta ação não pode ser desfeita.</p>
             <div className="modal-actions">
               <button type="button" className="btn btn-outline" onClick={() => setConfirmingReset(false)}>Cancelar</button>
               <button type="button" className="btn btn-primary btn-warn-solid" onClick={doReset}>Sim, reiniciar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {confirmingSkip && (
-        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setConfirmingSkip(false); }}>
-          <div className="modal" style={{ maxWidth: 480 }}>
-            <h3>Avançar para a próxima sessão</h3>
-            <p className="modal-text">Tem certeza que deseja ir para a próxima sessão? Lembre-se de fazer um encerramento primeiro com seu paciente — essa função é um <em>time skip</em>.</p>
-            <div className="modal-actions">
-              <button type="button" className="btn btn-outline" onClick={() => setConfirmingSkip(false)}>Cancelar</button>
-              <button type="button" className="btn btn-primary" onClick={doSkipSession}>Passar para a próxima sessão</button>
             </div>
           </div>
         </div>

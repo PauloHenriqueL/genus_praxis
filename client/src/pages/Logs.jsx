@@ -3,7 +3,37 @@ import { api } from '../api';
 import Typewriter from '../components/Typewriter';
 import ScoreBadge from '../components/ScoreBadge';
 import LogActions from '../components/LogActions';
-import { makeLogItems, downloadText } from '../logFiles';
+import CriteriaTable from '../components/CriteriaTable';
+import { SKILL_NAMES } from '../utils/skills';
+import { makeLogItems, downloadText, criteriaSection } from '../logFiles';
+import '../styles/Logs.css';
+
+// Rótulos dos campos novos que os logs ganharam ao portar o backend do All_OS.
+// SEM neuro: só exercise|freeplay.
+const TYPE_LABELS = { exercise: 'Trilha', freeplay: 'Simulação' };
+const MODE_LABELS = { competitive: 'Competitivo', training: 'Treino' };
+
+function TypeBadge({ log }) {
+  if (!log.type) return null;
+  const label = TYPE_LABELS[log.type] || log.type;
+  return <span className={`log-type-badge log-type-${log.type}`}>{label}</span>;
+}
+function ModeBadge({ log }) {
+  // mode só é significativo em freeplay (competitive alimenta o MMR).
+  if (log.type !== 'freeplay' || !log.mode) return null;
+  const label = MODE_LABELS[log.mode] || log.mode;
+  return <span className={`log-mode-badge log-mode-${log.mode}`}>{label}</span>;
+}
+function DifficultyBadge({ log }) {
+  if (!log.difficulty) return null;
+  return <span className="log-diff-badge">{log.difficulty}</span>;
+}
+function SkillBadge({ log }) {
+  // Competência treinada. Só exercícios da trilha têm; o servidor resolve o
+  // skillId a partir do exercises.json (o cliente não o envia).
+  if (!log.skillId) return null;
+  return <span className="log-skill-badge">{SKILL_NAMES[log.skillId] || `Competência ${log.skillId}`}</span>;
+}
 
 function formatDate(ts) {
   if (!ts) return '—';
@@ -41,12 +71,14 @@ function ExpiryNote({ log }) {
 
 function buildLogStrings(log) {
   const messages = Array.isArray(log.messages) ? log.messages : [];
+  const skillName = log.skillId ? (SKILL_NAMES[log.skillId] || `Competência ${log.skillId}`) : null;
   const header = [
     `Terapeuta: ${log.userName || '—'}`,
     `Paciente: ${log.itemTitle || '—'}`,
+    skillName ? `Competência: ${skillName}` : null,
     `Sessões: ${log.sessionCount || 1}`,
     `Data: ${formatDate(log.timestamp)}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
   const transcript = messages.filter((m) => !m.isSystem).map((m) => {
     const isUser = m.role === 'user';
     const author = isUser ? (log.userName || 'Terapeuta') : (log.itemTitle || 'Paciente');
@@ -56,16 +88,20 @@ function buildLogStrings(log) {
   }).join('\n\n---\n\n');
   const scoreLine = log.score != null ? `Nota final: ${log.score}\n\n` : '';
   const evalPart = log.evaluation ? `\n\n===========================\nAVALIAÇÃO\n===========================\n\n${scoreLine}${log.evaluation}` : '';
+  // Notas por critério só existem nos downloads de professor/admin — o servidor
+  // nem envia `criteriaScores` para o aluno.
+  const criteriaPart = criteriaSection(log.criteriaScores);
   return {
     logStr: `${header}\n\n---\n\n${transcript}`,
-    evalStr: `${header}${evalPart}`,
-    bothStr: `${header}\n\n---\n\n${transcript}${evalPart}`,
-    hasEval: !!evalPart,
+    evalStr: `${header}${evalPart}${criteriaPart}`,
+    bothStr: `${header}\n\n---\n\n${transcript}${evalPart}${criteriaPart}`,
+    hasEval: !!evalPart || !!criteriaPart,
   };
 }
+
 function logItemsFor(log) {
   const base = `${sanitizeFilename(log.userName)}-${sanitizeFilename(log.itemTitle)}`;
-  const hasEval = !!log.evaluation;
+  const hasEval = !!(log.evaluation || (log.criteriaScores && Object.keys(log.criteriaScores).length));
   return makeLogItems({
     baseName: base,
     getLog: () => buildLogStrings(log).logStr,
@@ -98,10 +134,17 @@ function LogMessages({ log }) {
   );
 }
 
+// Um log pode ter notas por critério sem texto de avaliação (e vice-versa).
+// `criteriaScores` só chega para professor/admin — o servidor o remove do aluno.
+function hasCriteria(log) {
+  return !!(log.criteriaScores && Object.keys(log.criteriaScores).length);
+}
+
 function LogCard({ log, canDelete, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [tab, setTab] = useState('log');
   const evaluation = (log.evaluation || '').trim();
+  const showEval = !!evaluation || hasCriteria(log);
   const messages = Array.isArray(log.messages) ? log.messages : [];
   return (
     <div className={`log-card ${expanded ? 'expanded' : ''}`} onClick={() => setExpanded((v) => !v)}>
@@ -111,6 +154,12 @@ function LogCard({ log, canDelete, onDelete }) {
         <span>{log.sessionCount || 1} {(log.sessionCount || 1) === 1 ? 'sessão' : 'sessões'}</span>
         <span>{messages.filter((m) => !m.isSystem).length} mensagens</span>
         <ExpiryNote log={log} />
+      </div>
+      <div className="log-badges">
+        <TypeBadge log={log} />
+        <ModeBadge log={log} />
+        <DifficultyBadge log={log} />
+        <SkillBadge log={log} />
       </div>
       <div className="log-card-head">
         <h4>{log.itemTitle || 'Sessão sem título'}</h4>
@@ -124,8 +173,8 @@ function LogCard({ log, canDelete, onDelete }) {
           <div className="log-view-tabs">
             <span className="log-view-label">Visualizar</span>
             <button type="button" className={`btn ${tab === 'log' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('log')}>Log da sessão</button>
-            <button type="button" className={`btn ${tab === 'evaluation' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('evaluation')} disabled={!evaluation} title={evaluation ? 'Ver avaliação' : 'Sem avaliação registrada'}>
-              Avaliação {evaluation ? '' : '(sem registro)'}
+            <button type="button" className={`btn ${tab === 'evaluation' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('evaluation')} disabled={!showEval} title={showEval ? 'Ver avaliação' : 'Sem avaliação registrada'}>
+              Avaliação {showEval ? '' : '(sem registro)'}
             </button>
           </div>
           <div style={{ margin: '10px 0 14px' }}>
@@ -135,7 +184,12 @@ function LogCard({ log, canDelete, onDelete }) {
             )}
           </div>
           {tab === 'log' ? <LogMessages log={log} /> : (
-            evaluation ? <div className="evaluation-body">{evaluation}</div> : <p className="muted-italic">Esta sessão não tem avaliação registrada.</p>
+            showEval ? (
+              <div>
+                <CriteriaTable criteriaScores={log.criteriaScores} />
+                {evaluation && <div className="evaluation-body">{evaluation}</div>}
+              </div>
+            ) : <p className="muted-italic">Esta sessão não tem avaliação registrada.</p>
           )}
         </div>
       )}
@@ -155,7 +209,7 @@ function StudentView({ logs }) {
     const map = new Map();
     for (const log of logs) {
       const key = log.itemId || log.itemTitle || '__sem-paciente';
-      if (!map.has(key)) map.set(key, { key, name: log.itemTitle || 'Sem nome', logs: [] });
+      if (!map.has(key)) map.set(key, { key, name: log.itemTitle || 'Sem nome', type: log.type, logs: [] });
       map.get(key).logs.push(log);
     }
     const arr = Array.from(map.values()).map((p) => {
@@ -171,6 +225,7 @@ function StudentView({ logs }) {
 
   if (selectedLog) {
     const evaluation = (selectedLog.evaluation || '').trim();
+    const showEval = !!evaluation || hasCriteria(selectedLog);
     return (
       <div>
         <BackButton onClick={() => { setSelectedLogId(null); setTab('log'); }}>Voltar para sessões de {selectedPatient?.name}</BackButton>
@@ -179,6 +234,10 @@ function StudentView({ logs }) {
           <h3>Sessão de {formatDate(selectedLog.timestamp)}</h3>
           <div className="detail-sub">
             <span>{selectedLog.sessionCount || 1} {(selectedLog.sessionCount || 1) === 1 ? 'sessão' : 'sessões'}</span>
+            <TypeBadge log={selectedLog} />
+            <ModeBadge log={selectedLog} />
+            <DifficultyBadge log={selectedLog} />
+            <SkillBadge log={selectedLog} />
             <ScoreBadge score={selectedLog.score} />
             <ExpiryNote log={selectedLog} />
           </div>
@@ -188,11 +247,18 @@ function StudentView({ logs }) {
           <div className="log-view-tabs">
             <span className="log-view-label">Visualizar</span>
             <button type="button" className={`btn ${tab === 'log' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('log')}>Log da sessão</button>
-            <button type="button" className={`btn ${tab === 'evaluation' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('evaluation')} disabled={!evaluation}>Avaliação {evaluation ? '' : '(sem registro)'}</button>
+            <button type="button" className={`btn ${tab === 'evaluation' ? 'btn-primary' : 'btn-ghost'} btn-sm`} onClick={() => setTab('evaluation')} disabled={!showEval}>Avaliação {showEval ? '' : '(sem registro)'}</button>
           </div>
         </div>
         <div className="card tight">
-          {tab === 'log' ? <LogMessages log={selectedLog} /> : (evaluation ? <div className="evaluation-body">{evaluation}</div> : <p className="muted-italic">Esta sessão não tem avaliação registrada.</p>)}
+          {tab === 'log' ? <LogMessages log={selectedLog} /> : (
+            showEval ? (
+              <div>
+                <CriteriaTable criteriaScores={selectedLog.criteriaScores} />
+                {evaluation && <div className="evaluation-body">{evaluation}</div>}
+              </div>
+            ) : <p className="muted-italic">Esta sessão não tem avaliação registrada.</p>
+          )}
         </div>
       </div>
     );
@@ -218,6 +284,8 @@ function StudentView({ logs }) {
                   <div className="session-list-date">{formatDate(log.timestamp)}</div>
                   <div className="session-list-sub">
                     <span>{dur > 0 ? `Duração ${mm}:${ss}` : 'sem duração'} · {log.sessionCount || 1} {(log.sessionCount || 1) === 1 ? 'sessão' : 'sessões'}</span>
+                    <TypeBadge log={log} />
+                    <ModeBadge log={log} />
                     <ExpiryNote log={log} />
                   </div>
                 </div>
@@ -240,7 +308,10 @@ function StudentView({ logs }) {
         {patients.map((p) => (
           <div key={p.key} className="character-card" onClick={() => setSelectedKey(p.key)} role="button" tabIndex={0}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setSelectedKey(p.key); }}>
-            <div className="character-card-header"><h3>{p.name}</h3></div>
+            <div className="character-card-header">
+              <h3>{p.name}</h3>
+              {p.type && <span className={`log-type-badge log-type-${p.type}`}>{TYPE_LABELS[p.type] || p.type}</span>}
+            </div>
             <p>{p.logs.length} {p.logs.length === 1 ? 'sessão' : 'sessões'}{p.lastTs ? ` · última em ${formatDate(new Date(p.lastTs).toISOString())}` : ''}</p>
           </div>
         ))}
@@ -287,6 +358,8 @@ function TherapistGroup({ name, logs, canDelete, onDelete }) {
 function AllLogsView({ logs, canDelete, onDelete }) {
   const [therapistQuery, setTherapistQuery] = useState('');
   const [patientQuery, setPatientQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState('all'); // all | exercise | freeplay
+  const [modeFilter, setModeFilter] = useState('all'); // all | competitive | training
   const [sort, setSort] = useState('recent'); // recent | old | therapist | patient
   const [grouped, setGrouped] = useState(true);
 
@@ -295,7 +368,9 @@ function AllLogsView({ logs, canDelete, onDelete }) {
     const pq = patientQuery.trim().toLowerCase();
     let arr = logs.filter((l) =>
       (!tq || (l.userName || '').toLowerCase().includes(tq)) &&
-      (!pq || (l.itemTitle || '').toLowerCase().includes(pq)),
+      (!pq || (l.itemTitle || '').toLowerCase().includes(pq)) &&
+      (typeFilter === 'all' || l.type === typeFilter) &&
+      (modeFilter === 'all' || l.mode === modeFilter),
     );
     const byDate = (a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
     if (sort === 'recent') arr = arr.slice().sort(byDate);
@@ -303,7 +378,7 @@ function AllLogsView({ logs, canDelete, onDelete }) {
     else if (sort === 'therapist') arr = arr.slice().sort((a, b) => (a.userName || '').localeCompare(b.userName || '', 'pt-BR') || byDate(a, b));
     else if (sort === 'patient') arr = arr.slice().sort((a, b) => (a.itemTitle || '').localeCompare(b.itemTitle || '', 'pt-BR') || byDate(a, b));
     return arr;
-  }, [logs, therapistQuery, patientQuery, sort]);
+  }, [logs, therapistQuery, patientQuery, typeFilter, modeFilter, sort]);
 
   const groups = useMemo(() => {
     if (!grouped) return null;
@@ -334,6 +409,16 @@ function AllLogsView({ logs, canDelete, onDelete }) {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
           <input type="text" value={patientQuery} onChange={(e) => setPatientQuery(e.target.value)} placeholder="Filtrar por paciente…" />
         </div>
+        <select className="logs-sort" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} title="Filtrar por tipo">
+          <option value="all">Todos os tipos</option>
+          <option value="exercise">Trilha</option>
+          <option value="freeplay">Simulação</option>
+        </select>
+        <select className="logs-sort" value={modeFilter} onChange={(e) => setModeFilter(e.target.value)} title="Filtrar por modo">
+          <option value="all">Todos os modos</option>
+          <option value="competitive">Competitivo</option>
+          <option value="training">Treino</option>
+        </select>
         <select className="logs-sort" value={sort} onChange={(e) => setSort(e.target.value)}>
           <option value="recent">Mais recentes</option>
           <option value="old">Mais antigos</option>
@@ -360,23 +445,28 @@ function AllLogsView({ logs, canDelete, onDelete }) {
 }
 
 // =====================================================================
-export default function Logs({ user }) {
+export default function Logs({ user, userId }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [ttlDays, setTtlDays] = useState(LOG_TTL_DAYS_FALLBACK);
-  const isStudent = user.role === 'therapist';
   const isAdmin = user.role === 'admin';
+  // Modo "meus logs": aluno sempre; ou quando a rota passa userId={user.id}
+  // explicitamente (/logs). A rota /supervisor renderiza SEM userId → o
+  // professor/admin vê os logs de todos os alunos.
+  const isStudent = user.role === 'therapist' || (userId != null && userId === user.id);
+  // userId específico a consultar no backend (aluno vê só o dele).
+  const queryUserId = user.role === 'therapist' ? user.id : (userId ?? undefined);
 
   function reload() {
     setLoading(true);
     setError('');
-    api.getLogs(isStudent ? user.id : undefined)
+    api.getLogs(queryUserId)
       .then(setLogs)
       .catch((err) => setError(err.message || 'Erro ao carregar logs'))
       .finally(() => setLoading(false));
   }
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [user.id]);
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [user.id, userId]);
   useEffect(() => { api.getLogsPolicy().then((p) => { if (p && p.ttlDays) setTtlDays(p.ttlDays); }).catch(() => {}); }, []);
 
   async function handleDelete(log) {

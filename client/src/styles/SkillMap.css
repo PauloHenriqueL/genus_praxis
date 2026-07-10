@@ -1,0 +1,167 @@
+/* ────────────────────────────────────────
+   TRILHA DE COMPETÊNCIAS (SkillMap)
+   Portado de all_os/index.css, remapeado ao tema laranja.
+   Tudo escopado sob .skill-map-page para não colidir com
+   outras páginas (.active, .swatch, .lg, etc.).
+   ──────────────────────────────────────── */
+
+.skill-map-page .skill-map-shell {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  position: relative;
+}
+.skill-map-page .skill-map-shell.fullscreen,
+.skill-map-page .skill-map-shell:fullscreen {
+  background: var(--bg-2);
+  padding: 32px;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.skill-map-page .skill-map-controls {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: flex;
+  gap: 8px;
+  z-index: 5;
+}
+.skill-map-page .skill-map-shell.fullscreen .skill-map-controls,
+.skill-map-page .skill-map-shell:fullscreen .skill-map-controls {
+  top: 24px;
+  right: 24px;
+}
+.skill-map-page .map-control-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  border: 1px solid var(--border-2);
+  color: var(--text-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.18s ease;
+  box-shadow: var(--shadow);
+}
+.skill-map-page .map-control-btn:hover {
+  border-color: var(--border-orange);
+  color: var(--orange);
+  background: rgba(255, 98, 0, 0.06);
+}
+
+.skill-map-page .skill-map-svg-wrap {
+  width: 100%;
+  height: min(60vh, 560px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  background: radial-gradient(ellipse at center, var(--bg-2) 0%, var(--bg) 70%, var(--surface-2) 100%);
+  border: 1px dashed var(--border-2);
+  overflow: hidden;
+}
+.skill-map-page .skill-map-shell.fullscreen .skill-map-svg-wrap,
+.skill-map-page .skill-map-shell:fullscreen .skill-map-svg-wrap {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+.skill-map-page .skill-map-svg { width: 100%; height: 100%; max-width: 1200px; }
+
+.skill-map-page .skill-map-footer {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.skill-map-page .skill-map-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+.skill-map-page .skill-map-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-soft);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  text-align: left;
+  width: 100%;
+}
+.skill-map-page .skill-map-legend .legend-button {
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+.skill-map-page .skill-map-legend .legend-button:hover {
+  background: rgba(255, 98, 0, 0.06);
+  border-color: var(--border-orange);
+  color: var(--text);
+}
+.skill-map-page .skill-map-legend .swatch {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.skill-map-page .skill-map-active-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.skill-map-page .skill-map-active-info .swatch.lg {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 4px var(--surface-2);
+}
+.skill-map-page .skill-map-active-info .active-eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+.skill-map-page .skill-map-active-info .active-name {
+  font-family: var(--font-title);
+  font-size: 20px;
+  color: var(--orange);
+  line-height: 1.2;
+}
+.skill-map-page .skill-map-active-info .active-meta {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--text-soft);
+  font-style: italic;
+}
+
+/* Ripple ao clicar num exercício (antes de navegar) */
+.skill-map-page .exercise-ripple {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: skill-ripple-out 0.55s ease-out forwards;
+  pointer-events: none;
+}
+.skill-map-page .exercise-ripple.delayed {
+  animation-delay: 0.12s;
+}
+@keyframes skill-ripple-out {
+  0%   { transform: scale(1);   opacity: 0.9; stroke-width: 2; }
+  100% { transform: scale(2.2); opacity: 0;   stroke-width: 0.5; }
+}
+
+@media (max-width: 640px) {
+  .skill-map-page .skill-map-active-info .active-meta { margin-left: 0; width: 100%; }
+  .skill-map-page .skill-map-svg-wrap { height: min(52vh, 440px); }
+}

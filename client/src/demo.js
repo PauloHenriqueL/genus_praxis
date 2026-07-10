@@ -82,11 +82,11 @@ export const demoApi = {
     return delay(merged);
   },
 
-  getCharacters: () => delay(characters.map((c) => ({ ...c }))),
-  createCharacter: (data) => { const c = { id: 'ch' + Date.now(), ...data }; characters.push(c); return delay(c); },
-  updateCharacter: (id, data) => { const i = characters.findIndex((c) => c.id === id); if (i >= 0) characters[i] = { ...characters[i], ...data }; return delay(characters[i]); },
-  deleteCharacter: (id) => { characters = characters.filter((c) => c.id !== id); return delay({ ok: true }); },
-  setCharacterPhoto: (id, data) => {
+  getFreeplay: () => delay(characters.map((c) => ({ ...c, difficulty: null, competitiveMatches: 0 }))),
+  createFreeplay: (data) => { const c = { id: 'ch' + Date.now(), ...data }; characters.push(c); return delay(c); },
+  updateFreeplay: (id, data) => { const i = characters.findIndex((c) => c.id === id); if (i >= 0) characters[i] = { ...characters[i], ...data }; return delay(characters[i]); },
+  deleteFreeplay: (id) => { characters = characters.filter((c) => c.id !== id); return delay({ ok: true }); },
+  setFreeplayPhoto: (id, data) => {
     const i = characters.findIndex((c) => c.id === id);
     if (i >= 0) {
       if (data && data.clear) { delete characters[i].photoIcon; delete characters[i].photoFull; }
@@ -94,6 +94,47 @@ export const demoApi = {
     }
     return delay(characters[i]);
   },
+
+  // Trilha de competências: sem exercícios no modo demonstração.
+  getExercises: () => delay([]),
+  createExercise: (d) => delay({ id: 'ex' + Date.now(), ...d }),
+  updateExercise: (id, d) => delay({ id, ...d }),
+  deleteExercise: () => delay({ ok: true }),
+  getProgress: () => delay({}),
+  saveProgress: (userId, d) => delay(d),
+
+  // Recursos que dependem de servidor real (IA, MMR, duelos, notificações).
+  // No modo demonstração aparecem vazios em vez de quebrar a página.
+  loginVisitor: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  logout: () => { try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch {} },
+  setMyTitle: () => delay({ ok: true }),
+  getProfilePhotos: () => delay([]),
+  getGamification: () => delay({ streak: null, dailyMissions: [], achievements: [], stats: {} }),
+  getRanking: () => delay([]),
+  getMyMmr: () => delay(null),
+  adminResetRanking: () => delay({ ok: true }),
+  getMyStudents: () => delay(users.filter((u) => u.role === 'therapist')),
+  getEntrevistadorPrompt: () => delay({ prompt: '' }),
+  entrevistadorChat: () => Promise.reject(new Error('Entrevistador indisponível no modo demonstração')),
+  extractBlocos: () => delay({ ready: false, bloco1: '', bloco2: null, meta: { name: '', age: null, description: '' } }),
+  createCharacterFromInterview: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  getDuelOpponents: () => delay([]),
+  createDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  getDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  getDuelByToken: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  acceptDuelByToken: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  acceptDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  submitDuel: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  cancelDuel: () => delay({ ok: true }),
+  exportDuelLog: () => Promise.reject(new Error('Duelos indisponíveis no modo demonstração')),
+  getSocialLogs: () => delay([]),
+  getProgressionPatients: () => delay([]),
+  evaluateProgression: () => Promise.reject(new Error('Progressão indisponível no modo demonstração')),
+  // Mesmo shape da API real: { items, unread }.
+  getNotifications: () => delay({ items: [], unread: 0 }),
+  markNotificationRead: () => delay({ ok: true }),
+  markAllNotificationsRead: () => delay({ ok: true }),
+  listActiveSessions: () => delay([]),
 
   getLogs: (userId) => {
     const u = currentUser();

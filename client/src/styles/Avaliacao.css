@@ -1,0 +1,100 @@
+/* Avaliacao.css — aba "Avaliação Independente" (professor/admin).
+   Portado de all_os/client/src/index.css e convertido ao tema laranja do Genus.
+   As classes genéricas ficam ESCOPADAS sob .avaliacao-page para não colidir com
+   .section-heading/.section-sub/.evaluation-* de outras páginas (Play.css etc.). */
+
+.avaliacao-intro {
+  max-width: 860px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.avaliacao-intro .form-field { display: flex; flex-direction: column; gap: 6px; }
+.avaliacao-intro label {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+.avaliacao-intro select,
+.avaliacao-intro textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+.avaliacao-intro select:focus,
+.avaliacao-intro textarea:focus {
+  outline: none;
+  border-color: var(--border-orange);
+}
+
+.avaliacao-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+.avaliacao-divider {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* .section-sub aqui é escopado (existe global em Play.css) — variante compacta. */
+.avaliacao-page .section-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+.avaliacao-page .section-sub.tight { margin-top: 4px; }
+
+/* Bloco colapsável do raciocínio bruto do avaliador (só supervisor/admin). */
+.avaliacao-page .evaluation-reasoning {
+  margin-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+  max-width: 100%;
+}
+.avaliacao-page .evaluation-reasoning summary {
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  color: var(--orange);
+  user-select: none;
+}
+.avaliacao-page .evaluation-reasoning-body {
+  white-space: pre-wrap;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--border-orange);
+  background: rgba(255, 98, 0, 0.05);
+  border-radius: var(--radius-sm);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+/* Notas por critério + nota final — escopadas para não colidir com outras
+   páginas que também definem .evaluation-scores / .evaluation-actions. */
+.avaliacao-page .evaluation-scores { margin-top: 8px; width: 100%; }
+.avaliacao-page .evaluation-actions {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.avaliacao-page .avaliacao-disabled {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+/* Spinner pequeno reaproveitando o .spinner base do index.css. */
+.avaliacao-page .spinner-sm {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
