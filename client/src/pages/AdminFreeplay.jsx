@@ -18,6 +18,8 @@ export default function AdminFreeplay() {
   const [photoData, setPhotoData] = useState(null);
   const [photoCleared, setPhotoCleared] = useState(false);
   const [currentPhotoUrl, setCurrentPhotoUrl] = useState(null);
+  // Ids em salvamento nos toggles de acesso (demanda #7).
+  const [togglingId, setTogglingId] = useState(null);
 
   function load() {
     setLoading(true);
@@ -29,6 +31,30 @@ export default function AdminFreeplay() {
   useEffect(() => { load(); }, []);
 
   function resetPhoto() { setPhotoData(null); setPhotoCleared(false); setCurrentPhotoUrl(null); }
+  /**
+   * Liga/desliga o acesso de um papel a este paciente (demanda #7). Salva na hora — são
+   * dois cliques por linha, e abrir o modal só para isso seria fricção à toa.
+   *
+   * Atualiza o estado local de forma otimista e recarrega no fim: o `difficulty` da linha
+   * é calculado no servidor (vem do MMR) e não deve ser inventado aqui.
+   */
+  async function toggleAccess(c, field) {
+    if (togglingId) return;
+    setTogglingId(c.id); setError('');
+    const novo = !(c[field] !== false);
+    try {
+      await api.updateFreeplay(c.id, { [field]: novo });
+      setCharacters((list) => list.map((x) => (x.id === c.id ? { ...x, [field]: novo } : x)));
+    } catch (err) {
+      setError(err.message || 'Erro ao alterar o acesso.');
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  // Sem NENHUM papel liberado: o paciente é invisível para todo mundo.
+  const bloqueados = characters.filter((c) => c.allowStudent === false && c.allowVisitor === false);
+
   function openCreate() { setForm(EMPTY_FORM); setEditingId(null); setFormError(''); resetPhoto(); setShowModal(true); }
 
   function openEdit(c) {
@@ -91,6 +117,18 @@ export default function AdminFreeplay() {
         <button className="btn btn-primary" onClick={openCreate}>+ Novo Personagem</button>
       </div>
 
+      {/* Aparece só ENQUANTO houver paciente bloqueado. É o aviso do dia do deploy: a
+          migração (D7) bloqueou todos os pacientes que já existiam, e sem isto o admin
+          veria os alunos "sem nenhum paciente" sem nenhuma mensagem de erro. */}
+      {bloqueados.length > 0 && (
+        <div className="alert" style={{ marginBottom: 18 }}>
+          <strong>{bloqueados.length} paciente(s) sem ninguém liberado.</strong>{' '}
+          Um paciente só aparece para quem estiver marcado nas colunas <strong>Aluno</strong> e{' '}
+          <strong>Visitante</strong>. Enquanto as duas estiverem desmarcadas, ele não existe para
+          ninguém — nem na biblioteca, nem no duelo, nem na progressão.
+        </div>
+      )}
+
       {error && <div className="alert error">{error}</div>}
 
       {loading ? (
@@ -101,7 +139,12 @@ export default function AdminFreeplay() {
         <div className="card tight" style={{ padding: 0, overflow: 'auto' }}>
           <table className="admin-table">
             <thead>
-              <tr><th>Nome</th><th>Idade</th><th>Dificuldade</th><th>Descrição</th><th>Ações</th></tr>
+              <tr>
+                <th>Nome</th><th>Idade</th><th>Dificuldade</th><th>Descrição</th>
+                <th className="access-col" title="Quem pode atender este paciente">Aluno</th>
+                <th className="access-col" title="Quem pode atender este paciente">Visitante</th>
+                <th>Ações</th>
+              </tr>
             </thead>
             <tbody>
               {characters.map((c) => (
@@ -114,6 +157,23 @@ export default function AdminFreeplay() {
                   <td style={{ color: 'var(--text-soft)', maxWidth: 380 }}>
                     <span className="clamp-2">{c.description}</span>
                   </td>
+                  {/* Acesso por papel (demanda #7). Campo ausente = liberado, mas a
+                      migração D7 bloqueou todos os pacientes que já existiam. */}
+                  {['allowStudent', 'allowVisitor'].map((field) => (
+                    <td key={field} className="access-col">
+                      <label className="access-check">
+                        <input
+                          type="checkbox"
+                          checked={c[field] !== false}
+                          disabled={togglingId === c.id}
+                          onChange={() => toggleAccess(c, field)}
+                        />
+                        <span className="sr-only">
+                          {`${field === 'allowStudent' ? 'Aluno' : 'Visitante'} pode atender ${c.name}`}
+                        </span>
+                      </label>
+                    </td>
+                  ))}
                   <td>
                     <div className="actions">
                       <button className="btn btn-outline btn-sm" onClick={() => openEdit(c)}>Editar</button>

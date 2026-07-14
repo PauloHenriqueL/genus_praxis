@@ -136,11 +136,6 @@ export default function DuelAccept({ user }) {
             </button>
           </div>
         )}
-        {user?.role === 'visitor' && (
-          <p style={{ color: 'var(--text-muted)', fontSize: 12.5, marginTop: 14 }}>
-            Você está em modo visitante — joga este duelo sem precisar de conta.
-          </p>
-        )}
       </div>
     </div>
   );

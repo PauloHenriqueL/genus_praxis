@@ -26,7 +26,9 @@ export default function Profile({ user, onUpdate }) {
   // Avatares prontos servidos pelo backend (/profiles_icon).
   const [gallery, setGallery] = useState([]);
 
-  // Conquistas, constância e título exibido. Visitante não tem nada disso.
+  // Conquistas, constância e título. Desde a demanda #2 o visitante tem tudo isso —
+  // ele é um usuário real (users.json) com as mesmas permissões de aluno. A ÚNICA
+  // diferença que sobra aqui: ele não tem senha (demanda #1), então não há o que trocar.
   const isVisitor = user.role === 'visitor';
   const [gamification, setGamification] = useState(null);
   const [activeTitle, setActiveTitle] = useState(user.activeTitle || '');
@@ -38,9 +40,9 @@ export default function Profile({ user, onUpdate }) {
   }, []);
 
   useEffect(() => {
-    if (isVisitor || !user.id) return;
+    if (!user.id) return;
     api.getGamification(user.id).then(setGamification).catch(() => {});
-  }, [user.id, isVisitor]);
+  }, [user.id]);
 
   const earned = (gamification?.achievements || []).filter((a) => a.earned);
   const streak = gamification?.streak;
@@ -103,36 +105,17 @@ export default function Profile({ user, onUpdate }) {
     }
   }
 
-  // O visitante é efêmero: não existe em users.json, então salvar o perfil ou
-  // trocar a senha responderia 404/401. Mostramos o aviso em vez do formulário.
-  if (isVisitor) {
-    return (
-      <div className="profile-page">
-        <div className="page-header">
-          <div className="eyebrow">Conta</div>
-          <h2><Typewriter text="Visi" /><span className="accent"><Typewriter text="tante" delayStart={280} /></span></h2>
-          <div className="ornament" />
-        </div>
-        <div className="card" style={{ textAlign: 'center', padding: '40px 24px' }}>
-          <p style={{ margin: 0, color: 'var(--text-soft)' }}>
-            Você está em uma <strong>sessão temporária</strong>. Ela não guarda perfil, progresso,
-            títulos nem histórico. Peça uma conta ao seu professor para acompanhar sua evolução.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="profile-page">
       <div className="page-header">
         <div className="eyebrow">Conta</div>
         <h2><Typewriter text="Meu " /><span className="accent"><Typewriter text="Perfil" delayStart={280} /></span></h2>
-        <p>Gerencie seus dados, sua foto, seu título e sua senha.</p>
+        <p>Gerencie seus dados, sua foto, seu título{isVisitor ? '' : ' e sua senha'}.</p>
         <div className="ornament" />
       </div>
 
-      {!isVisitor && (streak?.isAlive || earned.length > 0) && (
+      {(streak?.isAlive || earned.length > 0) && (
         <section className="card profile-achievements">
           <h3 className="card-title">Metas alcançadas</h3>
 
@@ -252,6 +235,8 @@ export default function Profile({ user, onUpdate }) {
           <div><button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Salvando…' : 'Salvar perfil'}</button></div>
         </form>
 
+        {/* O visitante entra sem senha (demanda #1) — não há o que alterar. */}
+        {!isVisitor && (
         <form className="card admin-form" onSubmit={savePassword}>
           <h3 className="card-title">Alterar senha</h3>
           <div>
@@ -266,6 +251,7 @@ export default function Profile({ user, onUpdate }) {
           {pwdMsg && <div className="alert success">{pwdMsg}</div>}
           <div><button type="submit" className="btn btn-primary" disabled={pwdSaving}>{pwdSaving ? 'Salvando…' : 'Alterar senha'}</button></div>
         </form>
+        )}
       </div>
 
       {/* Fora dos <form> de propósito: o cropper tem <button> e <input file>, que

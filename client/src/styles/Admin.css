@@ -134,3 +134,132 @@
   overflow-y: auto;
 }
 .admin-page .mono-area.short { min-height: 150px; }
+
+/* =====================================================================
+   Matriz de acesso a funcionalidades (demanda #4) + mensagem do cadeado (#3).
+   Tudo escopado sob `.admin-page`, como manda a convenção do projeto.
+   ===================================================================== */
+
+/* Aviso de que a matriz mexe no sistema, não na aparência. */
+.admin-page .feature-warning { border-left: 3px solid var(--accent); }
+.admin-page .feature-warning p,
+.admin-page .feature-warning li {
+  color: var(--text-soft);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+.admin-page .feature-warning ul { margin: 6px 0 12px; padding-left: 20px; }
+.admin-page .feature-warning li { margin-bottom: 6px; }
+.admin-page .feature-warning-note {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-2);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* A tabela rola dentro do próprio container: no celular ela não pode empurrar a
+   página inteira para fora da tela (mesma regra das outras 4 tabelas do projeto). */
+.admin-page .table-wrap { overflow-x: auto; }
+
+.admin-page .feature-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 380px;
+}
+.admin-page .feature-matrix th,
+.admin-page .feature-matrix td {
+  padding: 13px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-2);
+  vertical-align: top;
+}
+.admin-page .feature-matrix thead th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.admin-page .feature-matrix tbody tr:last-child td { border-bottom: none; }
+.admin-page .feature-matrix-role,
+.admin-page .feature-matrix-cell { text-align: center; width: 108px; }
+
+.admin-page .feature-matrix-name { font-weight: 600; font-size: 14px; }
+.admin-page .feature-matrix-desc {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Alvo de toque de 44px (WCAG/Apple HIG) — o checkbox sozinho tem ~16px. */
+.admin-page .feature-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  cursor: pointer;
+}
+.admin-page .feature-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Rótulo só para leitor de tela: o checkbox da célula precisa de nome acessível,
+   mas o texto já está visível na coluna da esquerda. */
+.admin-page .sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Coluna de contato na tabela de contas (demanda #6): e-mail em cima, telefone embaixo. */
+.admin-contact { font-size: 13px; color: var(--text-soft); line-height: 1.5; }
+.admin-contact-phone { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* Colunas de acesso do paciente (demanda #7): quem pode atender. */
+.admin-page .access-col,
+.access-col { text-align: center; width: 92px; }
+.access-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;   /* alvo de toque (WCAG/Apple HIG) */
+  height: 44px;
+  cursor: pointer;
+}
+.access-check input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.access-check input:disabled { opacity: 0.5; cursor: wait; }
+
+/* Prazo do acesso do visitante (demanda #8). */
+.access-pill {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.access-active    { background: rgba(56, 199, 122, 0.14); color: #38c77a; }
+.access-unlimited { background: rgba(140, 150, 165, 0.14); color: var(--text-muted); }
+.access-expired   { background: rgba(255, 92, 106, 0.14); color: var(--danger); }
+.access-blocked   { background: rgba(255, 92, 106, 0.2);  color: var(--danger); }
+
+/* Competências da trilha (demandas #5a/#5b). */
+.skill-swatch {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--border-2);
+}
+.orphan-list { margin: 8px 0 0; padding-left: 20px; color: var(--text-soft); font-size: 13.5px; line-height: 1.7; }
+.orphan-list .muted { color: var(--text-muted); }

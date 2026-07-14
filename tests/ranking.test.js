@@ -1,7 +1,7 @@
 // Ranking + MMR via HTTP.
 const {
   app, request, resetData, readData, writeData,
-  loginAs, loginVisitor, authHeader, makeLog,
+  loginAs, loginVisitor, loginVisitorFull, authHeader, makeLog,
 } = require('./helpers');
 
 beforeEach(() => resetData());
@@ -27,21 +27,38 @@ describe('GET /api/ranking — listagem e filtros', () => {
   });
 
   it('ordena: calibrando vai pro FIM; entre maduros, MMR desc', async () => {
+    // Só ALUNOS aqui. O ranking é segmentado por arena (D3), e professor/admin não
+    // competem — ver o teste "só lista quem é da arena" abaixo.
     writeData('mmr.json', {
       players: {
-        3: maturedPlayer(60, 8),       // maduro, mmr 60
-        5: maturedPlayer(90, 8),       // maduro, mmr 90 (líder)
-        6: { P: 80, n: 3, W: [] },     // calibrando (n<5)
-        2: maturedPlayer(75, 8),       // maduro, mmr 75
+        3: maturedPlayer(60, 8),       // aluno maduro, mmr 60
+        5: maturedPlayer(90, 8),       // aluno maduro, mmr 90 (líder)
+        6: { P: 80, n: 3, W: [] },     // aluno calibrando (n<5)
       },
       characters: {},
     });
     const admin = await loginAs('admin');
     const rank = (await request(app).get('/api/ranking').set(authHeader(admin))).body;
     const ids = rank.map((r) => r.userId);
-    // maduros primeiro em MMR desc: 5(90) > 2(75) > 3(60); calibrando (6) por último.
-    expect(ids).toEqual(['5', '2', '3', '6']);
+    // maduros primeiro em MMR desc: 5(90) > 3(60); calibrando (6) por último.
+    expect(ids).toEqual(['5', '3', '6']);
     expect(rank[rank.length - 1].calibrating).toBe(true);
+  });
+
+  // Regressão que a demanda #2 introduziu e a spec não previu: antes, o ranking
+  // listava QUALQUER usuário com partidas — inclusive um professor que tivesse
+  // jogado. Agora o filtro é por arena, e supervisor/admin não pertencem a nenhuma.
+  it('só lista quem é da arena: professor com MMR NÃO aparece', async () => {
+    writeData('mmr.json', {
+      players: {
+        2: maturedPlayer(99, 8),  // Professor A — não compete
+        3: maturedPlayer(60, 8),  // Aluno A
+      },
+      characters: {},
+    });
+    const admin = await loginAs('admin');
+    const rank = (await request(app).get('/api/ranking').set(authHeader(admin))).body;
+    expect(rank.map((r) => r.userId)).toEqual(['3']);
   });
 
   it('cada linha tem o shape esperado; title é OBJETO ou null; mmr null na calibração', async () => {
@@ -76,10 +93,29 @@ describe('GET /api/ranking — listagem e filtros', () => {
     expect(solo.matchesRemaining).toBe(3);
   });
 
-  it('visitante recebe 403 no ranking', async () => {
-    const v = await loginVisitor();
-    const res = await request(app).get('/api/ranking').set(authHeader(v));
-    expect(res.status).toBe(403);
+  // D3 — o coração da demanda #2: as duas arenas leem o MESMO mmr.json, mas cada uma
+  // só enxerga os seus. Se este teste cair, um visitante está entrando no ranking dos
+  // alunos (ou vice-versa).
+  it('D3: aluno vê só alunos; visitante vê só visitantes', async () => {
+    const v = await loginVisitorFull();
+    writeData('mmr.json', {
+      players: {
+        3: maturedPlayer(60, 8),          // Aluno A
+        5: maturedPlayer(90, 8),          // Aluno B
+        [v.id]: maturedPlayer(99, 8),     // visitante — MMR altíssimo de propósito
+      },
+      characters: {},
+    });
+
+    const aluno = await loginAs('aluno');
+    const rankAluno = (await request(app).get('/api/ranking').set(authHeader(aluno))).body;
+    expect(rankAluno.map((r) => r.userId).sort()).toEqual(['3', '5']);
+    // Mesmo liderando em MMR, o visitante não polui o ranking dos alunos.
+    expect(rankAluno.find((r) => r.userId === v.id)).toBeUndefined();
+
+    const rankVisitante = (await request(app).get('/api/ranking').set(authHeader(v.token))).body;
+    expect(rankVisitante.map((r) => r.userId)).toEqual([v.id]);
+    expect(rankVisitante[0].mmr).toBe(99);
   });
 
   it('título desbloqueado aparece RESOLVIDO (objeto {id,title,tier}) no ranking', async () => {
@@ -128,13 +164,23 @@ describe('GET /api/me/mmr', () => {
     expect(res.body.mmr).toBe(72);
   });
 
-  it('visitante → { visitor:true } sem MMR', async () => {
+  // Demanda #2: o visitante tem MMR de verdade, igual ao aluno (o antigo
+  // `{visitor:true}` de fachada morreu). O que o separa é a arena (D3), não o rating.
+  it('visitante tem MMR REAL, igual ao aluno', async () => {
+    const v = await loginVisitorFull();
+    writeData('mmr.json', { players: { [v.id]: maturedPlayer(72, 8) }, characters: {} });
+    const res = await request(app).get('/api/me/mmr').set(authHeader(v.token));
+    expect(res.status).toBe(200);
+    expect(res.body.mmr).toBe(72);
+    expect(res.body.calibrating).toBe(false);
+    expect(res.body.visitor).toBeUndefined(); // sem a flag de fachada
+  });
+
+  it('visitante novo entra calibrando (como qualquer aluno)', async () => {
     const v = await loginVisitor();
     const res = await request(app).get('/api/me/mmr').set(authHeader(v));
-    expect(res.status).toBe(200);
-    expect(res.body.visitor).toBe(true);
-    expect(res.body.mmr).toBeNull();
     expect(res.body.calibrating).toBe(true);
+    expect(res.body.mmr).toBeNull();
   });
 });
 

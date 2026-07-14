@@ -7,7 +7,7 @@ import LogActions from '../components/LogActions';
 import CriteriaTable from '../components/CriteriaTable';
 import { makeLogItems, evalSection as evalSectionTxt, downloadText, hasTranscript } from '../logFiles';
 import { nextActiveElapsed, SESSION_LIMIT_SECONDS, SESSION_LIMIT_MINUTES } from '../sessionLimit';
-import { SKILL_NAMES } from '../utils/skills';
+import { useSkillsContext, skillLabel } from '../utils/skills';
 import '../styles/Session.css';
 
 // Sessão de EXERCÍCIO da Trilha de Competências (single-session, sem time skip).
@@ -29,6 +29,7 @@ function buildEvaluationMessage(exerciseTitle, transcript) {
 }
 
 export default function ChatSession({ user }) {
+  const { skills, names } = useSkillsContext();
   const { id } = useParams();
   const navigate = useNavigate();
 
@@ -92,7 +93,7 @@ export default function ChatSession({ user }) {
         if (cancelled) return;
         if (!found) { setError('Exercício não encontrado.'); return; }
         setItem(found);
-        if (!restoredRef.current && user?.id && user.role !== 'visitor') {
+        if (!restoredRef.current && user?.id) {
           restoredRef.current = true;
           const saved = await loadActiveSession(user.id, SESSION_TYPE, id);
           if (cancelled) return;
@@ -110,10 +111,10 @@ export default function ChatSession({ user }) {
     return () => { cancelled = true; };
   }, [id, user?.id]);
 
-  // Autosave: localStorage síncrono + servidor com debounce. Visitantes não persistem.
+  // Autosave: localStorage síncrono + servidor com debounce. Desde a demanda #2 o
+  // visitante persiste como qualquer aluno (ele é um usuário real, com id em users.json).
   useEffect(() => {
     if (!sessionStarted || sessionEnded || !item || !user?.id || finishedRef.current) return;
-    if (user.role === 'visitor') return;
     const data = { messages, elapsedSeconds: elapsed, itemTitle: item.title };
     sessionDataRef.current = data;
     saveLocal(user.id, SESSION_TYPE, id, data);
@@ -127,7 +128,7 @@ export default function ChatSession({ user }) {
 
   // Flush ao trocar de rota / fechar aba / background.
   useEffect(() => {
-    if (!sessionStarted || sessionEnded || !user?.id || user.role === 'visitor') return;
+    if (!sessionStarted || sessionEnded || !user?.id) return;
     function flush() {
       if (finishedRef.current) return;
       const data = sessionDataRef.current;
@@ -264,7 +265,7 @@ export default function ChatSession({ user }) {
   // Builders de texto (copiar/baixar).
   function buildLogHeader() {
     return [
-      `Trilha · ${SKILL_NAMES[item?.skillId] || `Competência ${item?.skillId || '—'}`}`,
+      `Trilha · ${skillLabel(names, item?.skillId) || '—'}`,
       `Exercício: ${item?.title || '—'}`,
       `Dificuldade: ${DIFFICULTY_LABEL[item?.difficulty] || '—'}`,
       `Aluno: ${user?.name || '—'}`,
@@ -375,7 +376,7 @@ export default function ChatSession({ user }) {
     }
 
     // 3. Progresso da trilha: guarda a melhor nota do exercício.
-    if (totalScore !== null && user.role !== 'visitor') {
+    if (totalScore !== null) {
       try {
         const current = await api.getProgress(user.id);
         const existing = current?.[id];
@@ -555,7 +556,7 @@ export default function ChatSession({ user }) {
         <div className="chat-title">
           <h3>{item?.title || '...'}</h3>
           <div className="chat-status">
-            Trilha · {SKILL_NAMES[item?.skillId] || `Competência ${item?.skillId || ''}`}
+            Trilha · {skillLabel(names, item?.skillId) || '—'}
             {item?.difficulty && <> · <span className="difficulty-tag">{DIFFICULTY_LABEL[item.difficulty] || item.difficulty}</span></>}
           </div>
         </div>

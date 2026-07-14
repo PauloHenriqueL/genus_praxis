@@ -341,12 +341,12 @@ export default function DuelSession({ user }) {
               <>
                 <span className="post-stat-label">Competitivo</span>
                 <p className="mmr-result-note">
+                  {/* `reason: 'visitor'` sumiu na demanda #2 — o visitante ranqueia
+                      (na arena dele, D3/D9), então esse motivo não é mais emitido. */}
                   {r.mmr?.reason === 'anti_smurf'
                     ? 'Como a diferença de nível foi muito grande, este duelo não foi contabilizado para o competitivo.'
                     : r.mmr?.reason === 'calibrating'
                     ? 'Este duelo não contou para o competitivo — um dos jogadores ainda está em calibração (precisa completar as 5 primeiras partidas).'
-                    : r.mmr?.reason === 'visitor'
-                    ? 'Duelos competitivos valem só entre alunos cadastrados — este não contou para o MMR.'
                     : 'Este duelo não foi contabilizado para o competitivo.'}
                 </p>
               </>

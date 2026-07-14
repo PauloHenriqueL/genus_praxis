@@ -4,7 +4,7 @@ import Typewriter from '../components/Typewriter';
 import ScoreBadge from '../components/ScoreBadge';
 import LogActions from '../components/LogActions';
 import CriteriaTable from '../components/CriteriaTable';
-import { SKILL_NAMES } from '../utils/skills';
+import { useSkillsContext, skillLabel } from '../utils/skills';
 import { makeLogItems, downloadText, criteriaSection } from '../logFiles';
 import '../styles/Logs.css';
 
@@ -31,8 +31,9 @@ function DifficultyBadge({ log }) {
 function SkillBadge({ log }) {
   // Competência treinada. Só exercícios da trilha têm; o servidor resolve o
   // skillId a partir do exercises.json (o cliente não o envia).
+  const { names } = useSkillsContext();
   if (!log.skillId) return null;
-  return <span className="log-skill-badge">{SKILL_NAMES[log.skillId] || `Competência ${log.skillId}`}</span>;
+  return <span className="log-skill-badge">{skillLabel(names, log.skillId)}</span>;
 }
 
 function formatDate(ts) {
@@ -69,9 +70,9 @@ function ExpiryNote({ log }) {
   );
 }
 
-function buildLogStrings(log) {
+function buildLogStrings(log, names = {}) {
   const messages = Array.isArray(log.messages) ? log.messages : [];
-  const skillName = log.skillId ? (SKILL_NAMES[log.skillId] || `Competência ${log.skillId}`) : null;
+  const skillName = skillLabel(names, log.skillId);
   const header = [
     `Terapeuta: ${log.userName || '—'}`,
     `Paciente: ${log.itemTitle || '—'}`,
@@ -99,19 +100,23 @@ function buildLogStrings(log) {
   };
 }
 
-function logItemsFor(log) {
+function downloadLogAsText(log, names) {
+  const stamp = (log.timestamp || new Date().toISOString()).slice(0, 10);
+  downloadText(
+    `log-${sanitizeFilename(log.userName)}-${sanitizeFilename(log.itemTitle)}-${stamp}.txt`,
+    buildLogStrings(log, names).bothStr,
+  );
+}
+
+function logItemsFor(log, names) {
   const base = `${sanitizeFilename(log.userName)}-${sanitizeFilename(log.itemTitle)}`;
   const hasEval = !!(log.evaluation || (log.criteriaScores && Object.keys(log.criteriaScores).length));
   return makeLogItems({
     baseName: base,
-    getLog: () => buildLogStrings(log).logStr,
-    getEval: hasEval ? () => buildLogStrings(log).evalStr : null,
-    getBoth: hasEval ? () => buildLogStrings(log).bothStr : null,
+    getLog: () => buildLogStrings(log, names).logStr,
+    getEval: hasEval ? () => buildLogStrings(log, names).evalStr : null,
+    getBoth: hasEval ? () => buildLogStrings(log, names).bothStr : null,
   });
-}
-function downloadLogAsText(log) {
-  const stamp = (log.timestamp || new Date().toISOString()).slice(0, 10);
-  downloadText(`log-${sanitizeFilename(log.userName)}-${sanitizeFilename(log.itemTitle)}-${stamp}.txt`, buildLogStrings(log).bothStr);
 }
 
 // --- Detalhe de um log (transcrição + avaliação) ---
@@ -141,6 +146,7 @@ function hasCriteria(log) {
 }
 
 function LogCard({ log, canDelete, onDelete }) {
+  const { names } = useSkillsContext();
   const [expanded, setExpanded] = useState(false);
   const [tab, setTab] = useState('log');
   const evaluation = (log.evaluation || '').trim();
@@ -178,7 +184,7 @@ function LogCard({ log, canDelete, onDelete }) {
             </button>
           </div>
           <div style={{ margin: '10px 0 14px' }}>
-            <LogActions items={logItemsFor(log)} inline />
+            <LogActions items={logItemsFor(log, names)} inline />
             {canDelete && (
               <button type="button" className="btn btn-danger btn-sm" style={{ marginLeft: 8 }} onClick={() => onDelete(log)}>Excluir log</button>
             )}
@@ -201,6 +207,7 @@ function LogCard({ log, canDelete, onDelete }) {
 // VISÃO DO ALUNO — Pacientes → Datas → Detalhe
 // =====================================================================
 function StudentView({ logs }) {
+  const { names } = useSkillsContext();
   const [selectedKey, setSelectedKey] = useState(null);
   const [selectedLogId, setSelectedLogId] = useState(null);
   const [tab, setTab] = useState('log');
@@ -241,7 +248,7 @@ function StudentView({ logs }) {
             <ScoreBadge score={selectedLog.score} />
             <ExpiryNote log={selectedLog} />
           </div>
-          <div style={{ marginTop: 12 }}><LogActions items={logItemsFor(selectedLog)} inline /></div>
+          <div style={{ marginTop: 12 }}><LogActions items={logItemsFor(selectedLog, names)} inline /></div>
         </div>
         <div className="card tight log-view-tabs-card">
           <div className="log-view-tabs">
@@ -333,6 +340,7 @@ function BackButton({ children, onClick }) {
 // VISÃO PROFESSOR/ADMIN — filtros, ordenação e agrupamento por pessoa
 // =====================================================================
 function TherapistGroup({ name, logs, canDelete, onDelete }) {
+  const { names } = useSkillsContext();
   const [open, setOpen] = useState(true);
   const lastTs = logs.reduce((acc, l) => { const t = new Date(l.timestamp || 0).getTime(); return Number.isFinite(t) && t > acc ? t : acc; }, 0);
   return (
@@ -343,7 +351,7 @@ function TherapistGroup({ name, logs, canDelete, onDelete }) {
           <span className="muted">{logs.length} {logs.length === 1 ? 'sessão' : 'sessões'}{lastTs ? ` · última ${formatDate(new Date(lastTs).toISOString())}` : ''}</span>
         </div>
         <div className="therapist-group-actions">
-          <button type="button" className="btn btn-outline btn-sm" onClick={(e) => { e.stopPropagation(); logs.forEach((l) => downloadLogAsText(l)); }} title="Baixar todos os logs deste terapeuta">
+          <button type="button" className="btn btn-outline btn-sm" onClick={(e) => { e.stopPropagation(); logs.forEach((l) => downloadLogAsText(l, names)); }} title="Baixar todos os logs deste terapeuta">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
             Baixar todos
           </button>

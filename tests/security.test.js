@@ -4,7 +4,7 @@ const {
   app, request,
   resetData,
   readData, writeData,
-  loginAs, loginVisitor,
+  loginAs, loginVisitor, loginVisitorFull,
   authHeader,
   makeLog,
   SECRETS,
@@ -436,45 +436,117 @@ describe('GET /api/logs — deny-by-default', () => {
 // =====================================================================
 // 5. VISITANTE EXCLUÍDO
 // =====================================================================
-describe('exclusões do visitante', () => {
-  it('GET /api/ranking → 403', async () => {
+// A demanda #2 DERRUBOU as exclusões do visitante: ele agora tem as mesmas permissões
+// de um aluno. O que sobrou de fronteira é a ARENA (D3/D9) — e é isso que travamos aqui.
+// Os 403 antigos (ranking, duelo, título, MMR) foram removidos DE PROPÓSITO.
+describe('visitante — permissões de aluno (demanda #2)', () => {
+  it('GET /api/ranking → 200 (só que na arena dele)', async () => {
     const token = await loginVisitor();
     const res = await request(app).get('/api/ranking').set(authHeader(token));
-    expect(res.status).toBe(403);
-  });
-
-  it('POST /api/me/title → 403', async () => {
-    const token = await loginVisitor();
-    const res = await request(app).post('/api/me/title').set(authHeader(token)).send({ titleId: 'centena' });
-    expect(res.status).toBe(403);
-  });
-
-  it('POST /api/duel → 403', async () => {
-    const token = await loginVisitor();
-    const res = await request(app).post('/api/duel').set(authHeader(token))
-      .send({ characterId: 'fp-test-1', inviteMethod: 'link' });
-    expect(res.status).toBe(403);
-  });
-
-  it('GET /api/notifications → vazio', async () => {
-    const token = await loginVisitor();
-    const res = await request(app).get('/api/notifications').set(authHeader(token));
     expect(res.status).toBe(200);
-    expect(res.body.items).toEqual([]);
-    expect(res.body.unread).toBe(0);
+    expect(Array.isArray(res.body)).toBe(true);
   });
 
-  it('GET /api/me/mmr → objeto com visitor:true', async () => {
+  it('GET /api/me/mmr → MMR real, sem a flag `visitor` de fachada', async () => {
     const token = await loginVisitor();
     const res = await request(app).get('/api/me/mmr').set(authHeader(token));
     expect(res.status).toBe(200);
-    expect(res.body.visitor).toBe(true);
+    expect(res.body.visitor).toBeUndefined();
   });
 
-  it('GET /api/duel/opponents → 403', async () => {
+  it('GET /api/duel/opponents → 200', async () => {
     const token = await loginVisitor();
     const res = await request(app).get('/api/duel/opponents').set(authHeader(token));
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /api/duel (link) → cria', async () => {
+    const token = await loginVisitor();
+    const res = await request(app).post('/api/duel').set(authHeader(token))
+      .send({ characterId: 'fp-test-1', inviteMethod: 'link' });
+    expect(res.status).toBe(200);
+  });
+
+  it('GET /api/notifications → lista real (não mais o vazio de fachada)', async () => {
+    const token = await loginVisitor();
+    const res = await request(app).get('/api/notifications').set(authHeader(token));
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.items)).toBe(true);
+  });
+
+  it('POST /api/me/title → 403 só se NÃO desbloqueou (mesma regra do aluno)', async () => {
+    const token = await loginVisitor();
+    const res = await request(app).post('/api/me/title').set(authHeader(token)).send({ titleId: 'centena' });
+    // 403 pelo motivo certo — posse do título —, não por ser visitante.
     expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/desbloqueou/i);
+  });
+});
+
+// D9 — a fronteira que SUBSTITUIU os 403. As duas arenas não podem se cruzar, senão
+// um único duelo alimenta os dois rankings de uma vez.
+describe('D9 — visitante duela só com visitante', () => {
+  it('lista de oponentes não atravessa a arena', async () => {
+    const v = await loginVisitorFull();
+    const aluno = await loginAs('aluno');
+
+    const paraVisitante = (await request(app).get('/api/duel/opponents').set(authHeader(v.token))).body;
+    expect(paraVisitante.every((o) => o.userId !== '3' && o.userId !== '5')).toBe(true);
+
+    const paraAluno = (await request(app).get('/api/duel/opponents').set(authHeader(aluno))).body;
+    expect(paraAluno.every((o) => o.userId !== v.id)).toBe(true);
+  });
+
+  it('convite direto por id forjado → 403 (visitante desafiando aluno)', async () => {
+    const v = await loginVisitorFull();
+    const res = await request(app).post('/api/duel').set(authHeader(v.token))
+      .send({ characterId: 'fp-test-1', inviteMethod: 'system', opponentUserId: '3' });
+    expect(res.status).toBe(403);
+  });
+
+  it('convite direto por id forjado → 403 (aluno desafiando visitante)', async () => {
+    const v = await loginVisitorFull();
+    const aluno = await loginAs('aluno');
+    const res = await request(app).post('/api/duel').set(authHeader(aluno))
+      .send({ characterId: 'fp-test-1', inviteMethod: 'system', opponentUserId: v.id });
+    expect(res.status).toBe(403);
+  });
+
+  // O furo de verdade: no convite por LINK ninguém escolhe o oponente — quem abre o
+  // link se auto-adiciona. Sem o guard no `acceptDuel`, era por aqui que as arenas
+  // se cruzavam.
+  it('aceite por LINK cruzando a arena → 403 (aluno abre link de visitante)', async () => {
+    const v = await loginVisitorFull();
+    const criado = await request(app).post('/api/duel').set(authHeader(v.token))
+      .send({ characterId: 'fp-test-1', inviteMethod: 'link', mode: 'competitive' });
+    const token = readData('duels.json').find((d) => d.id === criado.body.id).token;
+
+    const aluno = await loginAs('aluno');
+    const res = await request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(aluno));
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/mesmo grupo/i);
+  });
+
+  it('aceite por LINK cruzando a arena → 403 (visitante abre link de aluno)', async () => {
+    const aluno = await loginAs('aluno');
+    const criado = await request(app).post('/api/duel').set(authHeader(aluno))
+      .send({ characterId: 'fp-test-1', inviteMethod: 'link', mode: 'competitive' });
+    const token = readData('duels.json').find((d) => d.id === criado.body.id).token;
+
+    const v = await loginVisitorFull();
+    const res = await request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(v.token));
+    expect(res.status).toBe(403);
+  });
+
+  it('visitante × visitante por LINK → aceita normalmente', async () => {
+    const v1 = await loginVisitorFull();
+    const criado = await request(app).post('/api/duel').set(authHeader(v1.token))
+      .send({ characterId: 'fp-test-1', inviteMethod: 'link', mode: 'competitive' });
+    const token = readData('duels.json').find((d) => d.id === criado.body.id).token;
+
+    const v2 = await loginVisitorFull();
+    const res = await request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(v2.token));
+    expect(res.status).toBe(200);
   });
 });
 

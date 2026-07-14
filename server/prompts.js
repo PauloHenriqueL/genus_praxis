@@ -2,6 +2,8 @@
 // specificInstruction / evaluationCriteria / evaluatorPrompt ao cliente (o aluno
 // nunca deve ver a "descrição secreta" do personagem nem o gabarito do avaliador).
 
+// Legado: hoje os critérios vivem em `skills.json` (server/skills.js). Mantido só como
+// referência do texto original das 5 competências.
 const SKILL_CRITERIA = {
   1: 'Critério 8 (Formulação de caso ×1) + Critério 9 (Insight/Potência ×2)',
   2: 'Critério 1 (Abertura e Encerramento ×1) + Critério 10 (Setting ×1)',
@@ -91,10 +93,17 @@ CRITÉRIOS ESPECÍFICOS DESTA SKILL:
 `;
 
 // System prompt de EXERCÍCIO (trilha). O modelo encarna o personagem/facilitador
-// descrito em specificInstruction e, quando solicitado, avalia segundo os
-// critérios da competência (skillId). Responde sempre em português do Brasil.
-function buildExercisePrompt(skillId, specificInstruction) {
-  return GENERAL_INSTRUCTION + '\n' + (SKILL_CRITERIA[skillId] || '') +
+// descrito em specificInstruction e avalia segundo os critérios da competência.
+//
+// ⚠ `skillCriteria` é o TEXTO dos critérios, já resolvido pelo chamador a partir do
+// `skills.json` (demanda #5a). Antes vinha de um `SKILL_CRITERIA` hardcoded aqui — o que
+// tornava impossível o admin editar os critérios sem um deploy.
+//
+// Um exercício ÓRFÃO (skillId de uma competência apagada, D4) chega aqui com
+// `skillCriteria` vazio: o prompt monta sem a seção de critérios. É degradação, não
+// erro — e é por isso que o admin é avisado ao apagar uma competência.
+function buildExercisePrompt(skillCriteria, specificInstruction) {
+  return GENERAL_INSTRUCTION + '\n' + (skillCriteria || '') +
     '\n\n---\n\nINSTRUÇÃO ESPECÍFICA DO EXERCÍCIO:\n' + (specificInstruction || '');
 }
 

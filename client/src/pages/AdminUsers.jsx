@@ -1,8 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api';
 import Typewriter from '../components/Typewriter';
+import { maskPhone } from '../visitorForm';
+import { visitorAccessStatus } from '../visitorAccess';
 
-const ROLE_LABELS = { admin: 'Administrador', supervisor: 'Professor', therapist: 'Aluno' };
+// O visitante entrou aqui na demanda #1: ele agora é um usuário real em users.json.
+const ROLE_LABELS = { admin: 'Administrador', supervisor: 'Professor', therapist: 'Aluno', visitor: 'Visitante' };
 const EMPTY_FORM = { username: '', name: '', password: '', role: 'therapist', teacherId: '', email: '' };
 
 export default function AdminUsers({ user: currentUser }) {
@@ -12,6 +16,9 @@ export default function AdminUsers({ user: currentUser }) {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
+  // Papel ORIGINAL de quem está sendo editado — o `form.role` muda conforme o admin
+  // mexe no select, então não serve para saber "isto era um visitante?".
+  const [editingRole, setEditingRole] = useState(null);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
   const [filterRole, setFilterRole] = useState('all');
@@ -24,16 +31,10 @@ export default function AdminUsers({ user: currentUser }) {
   const [evalEnabled, setEvalEnabled] = useState(false);
   const [evalSaving, setEvalSaving] = useState(false);
   const [evalError, setEvalError] = useState('');
-  const [visitorEvalEnabled, setVisitorEvalEnabled] = useState(false);
-  const [visitorEvalSaving, setVisitorEvalSaving] = useState(false);
-  const [visitorEvalError, setVisitorEvalError] = useState('');
 
   useEffect(() => {
     api.getSettings()
-      .then((s) => {
-        setEvalEnabled(!!s.evaluatorEnabled);
-        setVisitorEvalEnabled(!!s.visitorEvaluationEnabled);
-      })
+      .then((s) => setEvalEnabled(!!s.evaluatorEnabled))
       .catch(() => {});
   }, []);
 
@@ -50,18 +51,6 @@ export default function AdminUsers({ user: currentUser }) {
     }
   }
 
-  async function toggleVisitorEvaluation() {
-    if (visitorEvalSaving) return;
-    setVisitorEvalSaving(true); setVisitorEvalError('');
-    try {
-      const s = await api.adminUpdateSettings({ visitorEvaluationEnabled: !visitorEvalEnabled });
-      setVisitorEvalEnabled(!!s.visitorEvaluationEnabled);
-    } catch (err) {
-      setVisitorEvalError(err.message || 'Erro ao salvar configuração.');
-    } finally {
-      setVisitorEvalSaving(false);
-    }
-  }
 
   function load() {
     setLoading(true);
@@ -73,12 +62,12 @@ export default function AdminUsers({ user: currentUser }) {
   const teacherById = useMemo(() => { const m = {}; for (const t of teachers) m[t.id] = t; return m; }, [teachers]);
   const filteredUsers = useMemo(() => (filterRole === 'all' ? users : users.filter((u) => u.role === filterRole)), [users, filterRole]);
 
-  function openCreate() { setForm(EMPTY_FORM); setEditingId(null); setFormError(''); setShowModal(true); }
+  function openCreate() { setForm(EMPTY_FORM); setEditingId(null); setEditingRole(null); setFormError(''); setShowModal(true); }
   function openEdit(u) {
     setForm({ username: u.username || '', name: u.name || '', password: '', role: u.role, teacherId: u.teacherId || '', email: u.email || '' });
-    setEditingId(u.id); setFormError(''); setShowModal(true);
+    setEditingId(u.id); setEditingRole(u.role); setFormError(''); setShowModal(true);
   }
-  function closeModal() { setShowModal(false); setEditingId(null); setForm(EMPTY_FORM); setFormError(''); }
+  function closeModal() { setShowModal(false); setEditingId(null); setEditingRole(null); setForm(EMPTY_FORM); setFormError(''); }
   function handleChange(e) {
     const { name, value } = e.target;
     setForm((prev) => {
@@ -94,6 +83,11 @@ export default function AdminUsers({ user: currentUser }) {
     if (!form.username.trim()) return setFormError('Usuário é obrigatório.');
     if (!form.name.trim()) return setFormError('Nome é obrigatório.');
     if (!editingId && !form.password) return setFormError('Senha é obrigatória.');
+    // Converter um lead em conta com login exige senha: o visitante entra SEM senha (D1),
+    // então promovê-lo sem definir uma criaria uma conta sem nenhuma porta de entrada.
+    if (convertendoVisitante && !form.password) {
+      return setFormError('Defina uma senha: sem ela, este visitante ficaria sem conseguir entrar.');
+    }
     if (form.password && form.password.length < 6) return setFormError('Senha deve ter ao menos 6 caracteres.');
     setSaving(true);
     try {
@@ -121,6 +115,22 @@ export default function AdminUsers({ user: currentUser }) {
     if (!window.confirm(`Excluir ${ROLE_LABELS[u.role]} "${u.name}" (${u.username})?`)) return;
     try { await api.adminDeleteUser(u.id); load(); }
     catch (err) { setError(err.message || 'Erro ao excluir'); }
+  }
+
+  // Demanda #8: renovar (ganha a duração padrão VIGENTE, D8) ou bloquear na hora.
+  const [accessSavingId, setAccessSavingId] = useState(null);
+  async function handleVisitorAccess(u, action) {
+    if (accessSavingId) return;
+    if (action === 'block' && !window.confirm(`Bloquear o acesso de "${u.name}"?`)) return;
+    setAccessSavingId(u.id); setError('');
+    try {
+      await api.adminVisitorAccess(u.id, action);
+      load();
+    } catch (err) {
+      setError(err.message || 'Erro ao alterar o acesso.');
+    } finally {
+      setAccessSavingId(null);
+    }
   }
 
   function openResetPassword(u) { setResetTarget(u); setResetPassword(''); setResetError(''); setResetSuccess(''); }
@@ -158,11 +168,16 @@ export default function AdminUsers({ user: currentUser }) {
     }
   }
 
+  // O admin está transformando um visitante numa conta com login?
+  const convertendoVisitante = editingRole === 'visitor' && form.role !== 'visitor';
+
   const roleFilters = [
     { v: 'all', label: `Todos (${users.length})` },
     { v: 'admin', label: `Administradores (${users.filter((u) => u.role === 'admin').length})` },
     { v: 'supervisor', label: `Professores (${users.filter((u) => u.role === 'supervisor').length})` },
     { v: 'therapist', label: `Alunos (${users.filter((u) => u.role === 'therapist').length})` },
+    // Demanda #6: os leads que se cadastraram pelo formulário de visitante.
+    { v: 'visitor', label: `Visitantes (${users.filter((u) => u.role === 'visitor').length})` },
   ];
 
   return (
@@ -201,28 +216,18 @@ export default function AdminUsers({ user: currentUser }) {
         </button>
       </div>
 
-      {/* Avaliação do visitante: custo de IA para sessões anônimas. Só faz efeito
-          com a avaliação automática ligada. */}
+      {/* O antigo card "Avaliar sessões de visitante" virou uma célula da matriz de
+          acesso (demanda #4): `avaliacao` × `visitante`, em /admin/acessos. Manter os
+          dois lugares editando a mesma coisa era um convite a divergirem. */}
       <div className="card settings-row">
         <div style={{ maxWidth: 640 }}>
-          <div className="settings-row-title">
-            Avaliar sessões de visitante
-            <span className={`pill-status ${visitorEvalEnabled ? 'on' : 'off'}`}>{visitorEvalEnabled ? 'LIGADA' : 'DESLIGADA'}</span>
-          </div>
+          <div className="settings-row-title">Acesso às funcionalidades</div>
           <p className="settings-row-desc">
-            Visitantes têm sessão temporária e não pontuam. Por padrão eles <strong>não</strong> são avaliados,
-            para não gastar chamadas de IA com acessos anônimos. Ligue para que também recebam a devolutiva.
-            {!evalEnabled && <> Sem efeito enquanto a <strong>avaliação automática</strong> estiver desligada.</>}
+            Liberar ou bloquear Competitivo, Duelo, Progressão, Objetivos, Ranking e a
+            avaliação por IA — separadamente para <strong>alunos</strong> e <strong>visitantes</strong>.
           </p>
-          {visitorEvalError && <div className="alert error" style={{ marginTop: 8, marginBottom: 0 }}>{visitorEvalError}</div>}
         </div>
-        <button
-          className={`btn ${visitorEvalEnabled ? 'btn-outline' : 'btn-primary'}`}
-          onClick={toggleVisitorEvaluation}
-          disabled={visitorEvalSaving}
-        >
-          {visitorEvalSaving ? 'Salvando…' : (visitorEvalEnabled ? 'Desligar' : 'Ligar')}
-        </button>
+        <Link className="btn btn-outline" to="/admin/acessos">Configurar</Link>
       </div>
 
       <div className="filter-chips">
@@ -238,7 +243,7 @@ export default function AdminUsers({ user: currentUser }) {
       ) : (
         <div className="card tight" style={{ padding: 0, overflow: 'auto' }}>
           <table className="admin-table">
-            <thead><tr><th>Nome</th><th>Usuário</th><th>Função</th><th>Vínculo</th><th>Ações</th></tr></thead>
+            <thead><tr><th>Nome</th><th>Usuário</th><th>Função</th><th>Contato</th><th>Vínculo</th><th>Acesso</th><th>Ações</th></tr></thead>
             <tbody>
               {filteredUsers.map((u) => {
                 const isCurrent = u.id === currentUser.id;
@@ -250,6 +255,14 @@ export default function AdminUsers({ user: currentUser }) {
                     </td>
                     <td><code>{u.username}</code></td>
                     <td>{ROLE_LABELS[u.role] || u.role}</td>
+                    {/* Demanda #6: e-mail e telefone. O telefone é guardado só com os
+                        dígitos (o servidor normaliza); a máscara é aplicada aqui, na
+                        exibição, pelo MESMO módulo que o formulário do visitante usa. */}
+                    <td className="admin-contact">
+                      {u.email ? <div>{u.email}</div> : null}
+                      {u.phone ? <div className="admin-contact-phone">{maskPhone(u.phone)}</div> : null}
+                      {!u.email && !u.phone ? <span style={{ color: 'var(--text-muted)' }}>—</span> : null}
+                    </td>
                     <td style={{ color: 'var(--text-soft)' }}>
                       {u.role === 'therapist'
                         ? (teacher ? `Professor: ${teacher.name}` : '—')
@@ -257,10 +270,43 @@ export default function AdminUsers({ user: currentUser }) {
                           ? `${users.filter((s) => s.teacherId === u.id).length} aluno(s)`
                           : '—'}
                     </td>
+                    {/* Prazo do acesso (demanda #8). Só o visitante tem — os outros papéis
+                        não expiram. */}
+                    <td>
+                      {(() => {
+                        const st = visitorAccessStatus(u);
+                        if (!st) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+                        return <span className={`access-pill access-${st.state}`}>{st.label}</span>;
+                      })()}
+                    </td>
                     <td>
                       <div className="actions">
+                        {u.role === 'visitor' && (
+                          <>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              disabled={accessSavingId === u.id}
+                              onClick={() => handleVisitorAccess(u, 'renew')}
+                              title="Renova com a duração padrão vigente"
+                            >
+                              Renovar
+                            </button>
+                            {!u.blocked && (
+                              <button
+                                className="btn btn-outline btn-sm"
+                                disabled={accessSavingId === u.id}
+                                onClick={() => handleVisitorAccess(u, 'block')}
+                              >
+                                Bloquear
+                              </button>
+                            )}
+                          </>
+                        )}
                         <button className="btn btn-outline btn-sm" onClick={() => openEdit(u)}>Editar</button>
-                        <button className="btn btn-outline btn-sm" onClick={() => openResetPassword(u)}>Senha</button>
+                        {/* Visitante entra sem senha (D1) — não há o que redefinir. */}
+                        {u.role !== 'visitor' && (
+                          <button className="btn btn-outline btn-sm" onClick={() => openResetPassword(u)}>Senha</button>
+                        )}
                         <button className="btn btn-danger btn-sm" onClick={() => handleDelete(u)} disabled={isCurrent}>Excluir</button>
                       </div>
                     </td>
@@ -286,6 +332,9 @@ export default function AdminUsers({ user: currentUser }) {
                 <div style={{ flex: 1 }}>
                   <label htmlFor="role">Função</label>
                   <select id="role" name="role" value={form.role} onChange={handleChange}>
+                    {/* "Visitante" só aparece para quem JÁ é um: ninguém é promovido a
+                        visitante — essa conta nasce do cadastro público (demanda #1). */}
+                    {editingRole === 'visitor' && <option value="visitor">Visitante</option>}
                     <option value="therapist">Aluno</option>
                     <option value="supervisor">Professor</option>
                     <option value="admin">Administrador</option>
@@ -309,9 +358,27 @@ export default function AdminUsers({ user: currentUser }) {
                   </select>
                 </div>
               )}
+              {convertendoVisitante && (
+                <div className="alert" style={{ marginBottom: 0 }}>
+                  Este visitante entrou <strong>sem senha</strong>. Ao convertê-lo em
+                  {' '}{ROLE_LABELS[form.role]}, ele passa a entrar por <strong>usuário e senha</strong> —
+                  defina uma abaixo, senão ele ficaria sem conseguir acessar.
+                </div>
+              )}
               <div>
-                <label htmlFor="password">{editingId ? 'Nova senha' : 'Senha'}{editingId && <em className="opt"> (em branco para manter)</em>}</label>
-                <input id="password" name="password" type="text" value={form.password} onChange={handleChange} placeholder={editingId ? '••••••' : 'Senha inicial (mínimo 6)'} autoComplete="new-password" />
+                <label htmlFor="password">
+                  {editingId ? 'Nova senha' : 'Senha'}
+                  {editingId && !convertendoVisitante && <em className="opt"> (em branco para manter)</em>}
+                </label>
+                <input
+                  id="password"
+                  name="password"
+                  type="text"
+                  value={form.password}
+                  onChange={handleChange}
+                  placeholder={editingId && !convertendoVisitante ? '••••••' : 'Senha inicial (mínimo 6)'}
+                  autoComplete="new-password"
+                />
               </div>
               {formError && <div className="alert error">{formError}</div>}
               <div className="modal-actions">

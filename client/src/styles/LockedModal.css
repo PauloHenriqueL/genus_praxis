@@ -1,0 +1,53 @@
+/* Pop-up do cadeado (demanda #3). Classes escopadas sob `.locked-modal*`, como manda a
+   convenção do projeto — nada de nome genérico solto. */
+
+.locked-modal {
+  max-width: 420px;
+  text-align: center;
+  padding: 30px 26px 24px;
+}
+
+.locked-modal-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  margin-bottom: 14px;
+  color: var(--accent);
+  background: rgba(255, 122, 26, 0.12);
+}
+
+.locked-modal h3 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.locked-modal-text {
+  margin: 0 0 22px;
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.6;
+  /* A mensagem é livre (o admin digita) — respeita as quebras dele sem estourar a caixa. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Cadeado ao lado do rótulo, na sidebar. O item mantém o visual e a animação; o que
+   muda é só este ícone e o tom apagado. */
+.nav-locked {
+  opacity: 0.55;
+  cursor: pointer;
+}
+.nav-locked:hover { opacity: 0.8; }
+
+.nav-lock-icon {
+  margin-left: auto;
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Na sidebar recolhida só sobra o ícone da função — o cadeado não cabe. */
+.sidebar-collapsed .nav-lock-icon { display: none; }

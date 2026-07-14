@@ -142,11 +142,15 @@ describe('POST /api/logs — MMR', () => {
     expect(res.body.mmr).toBeUndefined();
   });
 
-  it('visitante competitivo -> SEM mmr', async () => {
+  // Demanda #2 — inversão consciente: o visitante COM mmr. Antes a chave vinha ausente
+  // (ele era excluído do rating); agora ele pontua igual ao aluno, e o que o separa é a
+  // arena do ranking (D3), não o direito de pontuar.
+  it('visitante competitivo -> COM mmr (demanda #2)', async () => {
     const visitor = await loginVisitor();
     const res = await post(visitor, { type: 'freeplay', itemId: 'fp-test-1', messages: [], mode: 'competitive', score: 70 });
     expect(res.status).toBe(200);
-    expect(res.body.mmr).toBeUndefined();
+    expect(res.body.mmr).toBeTruthy();
+    expect(res.body.mmr.n).toBe(1);
   });
 });
 

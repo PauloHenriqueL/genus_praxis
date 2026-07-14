@@ -46,6 +46,19 @@ function notifySessionExpired() {
   for (const fn of sessionListeners) { try { fn(); } catch {} }
 }
 
+// Visitante com o prazo vencido (demanda #8). É um caso separado da sessão expirada:
+// o token dele ainda é VÁLIDO (o JWT dura 7 dias), o que venceu é o direito de acesso.
+// Por isso o servidor responde 403 + `code: VISITOR_EXPIRED`, e não 401 — um 401 faria
+// logout e mandaria para o login, onde ele se cadastraria de novo e não entenderia nada.
+const visitorExpiredListeners = new Set();
+export function onVisitorExpired(fn) {
+  visitorExpiredListeners.add(fn);
+  return () => visitorExpiredListeners.delete(fn);
+}
+function notifyVisitorExpired() {
+  for (const fn of visitorExpiredListeners) { try { fn(); } catch {} }
+}
+
 async function request(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   const token = getToken();
@@ -63,7 +76,19 @@ async function request(path, options = {}) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => null);
-    throw new Error((err && err.error) || `Erro ${res.status}${res.statusText ? ' ' + res.statusText : ''}`);
+    if (res.status === 403 && err && err.code === 'VISITOR_EXPIRED') notifyVisitorExpired();
+    const e = new Error((err && err.error) || `Erro ${res.status}${res.statusText ? ' ' + res.statusText : ''}`);
+    // Erros de validação por campo (ex.: cadastro do visitante) vêm com `field`
+    // (qual campo colidiu, no 409) ou `fields` (lista, no 400). Sem isto, o
+    // formulário não conseguiria destacar o campo errado — a mensagem se perderia.
+    e.status = res.status;
+    if (err && err.field) e.field = err.field;
+    if (err && Array.isArray(err.fields)) e.fields = err.fields;
+    if (err && err.code) e.code = err.code;
+    // Demandas #4 e #7: o client abre o pop-up certo em vez de um erro genérico.
+    if (err && err.locked) e.locked = true;
+    if (err && err.patientLocked) e.patientLocked = true;
+    throw e;
   }
   return res.json();
 }
@@ -75,8 +100,11 @@ const realApi = {
     if (data && data.token) setToken(data.token);
     return data && data.user ? data.user : data;
   },
-  loginVisitor: async () => {
-    const data = await request('/login/visitor', { method: 'POST', body: {} });
+  // Cadastro do visitante: nome, e-mail e telefone (obrigatórios e únicos).
+  // Sem senha — informar os dados JÁ é o login. Repetir os mesmos dados volta
+  // para a mesma conta. Colisão → erro com `.field` dizendo qual campo bateu.
+  loginVisitor: async ({ name, email, phone } = {}) => {
+    const data = await request('/login/visitor', { method: 'POST', body: { name, email, phone } });
     if (data && data.token) setToken(data.token);
     return data && data.user ? data.user : data;
   },
@@ -203,6 +231,20 @@ const realApi = {
   adminCreateUser: (data) => request('/admin/users', { method: 'POST', body: data }),
   adminUpdateUser: (id, data) => request(`/admin/users/${id}`, { method: 'PUT', body: data }),
   adminDeleteUser: (id) => request(`/admin/users/${id}`, { method: 'DELETE' }),
+  // Demanda #8: renovar (duração padrão VIGENTE) ou bloquear o acesso de um visitante.
+  // Competências da trilha (demandas #5a/#5b). O admin recebe `criteria` e a contagem
+  // de exercícios; o aluno, só id/nome/cor.
+  getSkills: () => request('/skills'),
+  adminCreateSkill: (data) => request('/admin/skills', { method: 'POST', body: data }),
+  adminUpdateSkill: (id, data) => request(`/admin/skills/${id}`, { method: 'PUT', body: data }),
+  adminReorderSkills: (ids) => request('/admin/skills/reorder', { method: 'POST', body: { ids } }),
+  // `confirm` é obrigatório: sem ele o servidor responde 409 com a contagem de órfãos.
+  adminDeleteSkill: (id, { confirm = false } = {}) =>
+    request(`/admin/skills/${id}${confirm ? '?confirm=1' : ''}`, { method: 'DELETE' }),
+  adminSkillOrphans: () => request('/admin/skills/orphans'),
+
+  adminVisitorAccess: (id, action) =>
+    request(`/admin/users/${id}/visitor-access`, { method: 'POST', body: { action } }),
   adminResetPassword: (id, newPassword) =>
     request(`/admin/users/${id}/reset-password`, { method: 'POST', body: { newPassword } }),
   adminExportData: async () => {

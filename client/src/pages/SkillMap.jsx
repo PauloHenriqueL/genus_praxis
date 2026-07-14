@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import { SKILL_NAMES, SKILL_COLORS } from '../utils/skills';
+import { useSkillsContext, polygonAngles } from '../utils/skills';
 import Typewriter from '../components/Typewriter';
 import '../styles/SkillMap.css';
 
@@ -11,9 +11,13 @@ const CENTER_X = VIEW_W / 2;
 const CENTER_Y = VIEW_H / 2;
 const SKILL_RADIUS = 70;
 const EXERCISE_RADIUS = 36;
-const PENTAGON_DIST = 280;          // distância do centro até o pilar (overview)
+const POLYGON_DIST = 280;           // distância do centro até o pilar (overview)
 const ORBIT_RADIUS_ZOOMED = 250;    // raio da órbita quando zoomed
-const PENTAGON_ANGLES_DEG = [270, 342, 54, 126, 198];
+
+// O mapa era um PENTÁGONO literal: 5 ângulos fixos, 5 laços `for (i = 1; i <= 5)`.
+// Com as demandas #5a/#5b o admin pode ter 3 ou 8 competências, então a geometria passou
+// a ser calculada a partir de N (`polygonAngles`). Com N = 5 o desenho é idêntico ao de
+// antes — o pentágono original era exatamente `270 + k·72`.
 
 // Cores base do canvas escuro (tema laranja do Genus).
 const C_NODE_BG = '#160726';        // fundo dos nós/núcleo (surface escura)
@@ -26,13 +30,19 @@ const C_TEXT_MUTED = 'rgba(130,110,160,0.7)';
 
 const degToRad = (deg) => (deg * Math.PI) / 180;
 
-function getSkillPosition(index) {
-  const angle = degToRad(PENTAGON_ANGLES_DEG[index]);
+/** Posição do vértice `index` num polígono de `total` lados. */
+function getSkillPosition(index, total) {
+  const angles = polygonAngles(total);
+  const angle = degToRad(angles[index] ?? 270);
   return {
-    x: CENTER_X + PENTAGON_DIST * Math.cos(angle),
-    y: CENTER_Y + PENTAGON_DIST * Math.sin(angle),
+    x: CENTER_X + POLYGON_DIST * Math.cos(angle),
+    y: CENTER_Y + POLYGON_DIST * Math.sin(angle),
   };
 }
+
+/** "três", "cinco"… — só para o texto de apresentação não mentir o número. */
+const NUMERO_POR_EXTENSO = ['zero', 'uma', 'duas', 'três', 'quatro', 'cinco', 'seis', 'sete', 'oito', 'nove', 'dez'];
+const porExtenso = (n) => NUMERO_POR_EXTENSO[n] || String(n);
 
 // Posições orbitais dos exercícios em torno do centro (modo zoomed)
 function getZoomedExercisePositions(count) {
@@ -88,6 +98,9 @@ function shade(hex, percent) {
 
 export default function SkillMap({ user }) {
   const navigate = useNavigate();
+  // Competências vindas do servidor (demandas #5a/#5b): o número de lados do polígono, os
+  // nomes e as cores saem daqui — nada mais é hardcoded.
+  const { skills, names, colors } = useSkillsContext();
   const [exercises, setExercises] = useState([]);
   const [progressMap, setProgressMap] = useState({});
   const [loading, setLoading] = useState(true);
@@ -240,11 +253,14 @@ export default function SkillMap({ user }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [zoomedSkill]);
 
+  // Agrupa por competência EXISTENTE. Um exercício órfão (skillId de uma competência
+  // apagada, D4) não entra em nenhum grupo e não aparece na trilha — é o comportamento
+  // que a decisão D4 aceitou, e o admin é avisado disso ao apagar.
   const bySkill = {};
-  for (let i = 1; i <= 5; i++) bySkill[i] = [];
+  for (const sk of skills) bySkill[sk.id] = [];
   for (const ex of exercises) {
     const sid = Number(ex.skillId);
-    if (sid >= 1 && sid <= 5) bySkill[sid].push(ex);
+    if (bySkill[sid]) bySkill[sid].push(ex);
   }
 
   function getSkillAggregateScore(skillId) {
@@ -290,7 +306,7 @@ export default function SkillMap({ user }) {
               <span className="accent"><Typewriter text="Competências" delayStart={520} /></span>
             </h2>
             <p>
-              Cinco competências clínicas. Clique em uma para abrir seus exercícios — a partir deles, inicie a
+              Competências clínicas. Clique em uma para abrir seus exercícios — a partir deles, inicie a
               prática deliberada com avaliação ao final.
             </p>
           </div>
@@ -375,7 +391,7 @@ export default function SkillMap({ user }) {
           >
             <svg ref={svgRef} className="skill-map-svg" viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} preserveAspectRatio="xMidYMid meet">
               <defs>
-                {Object.entries(SKILL_COLORS).map(([id, color]) => (
+                {skills.map(({ id, color }) => (
                   <filter key={`glow-${id}`} id={`glow-${id}`} x="-50%" y="-50%" width="200%" height="200%">
                     <feGaussianBlur stdDeviation="3.5" result="coloredBlur" />
                     <feMerge>
@@ -393,9 +409,9 @@ export default function SkillMap({ user }) {
                 <circle cx={CENTER_X} cy={CENTER_Y} r="370" fill="none" stroke={C_RING} strokeWidth="1" strokeDasharray="2 6" />
                 <circle cx={CENTER_X} cy={CENTER_Y} r="290" fill="none" stroke={C_RING_2} strokeWidth="0.6" />
                 <circle cx={CENTER_X} cy={CENTER_Y} r="200" fill="none" stroke={C_RING} strokeWidth="1" />
-                {[0, 1, 2, 3, 4].map((i) => {
-                  const a = getSkillPosition(i);
-                  const b = getSkillPosition((i + 1) % 5);
+                {skills.map((_, i) => {
+                  const a = getSkillPosition(i, skills.length);
+                  const b = getSkillPosition((i + 1) % skills.length, skills.length);
                   return (
                     <line
                       key={`pent-${i}`}
@@ -409,7 +425,7 @@ export default function SkillMap({ user }) {
               {/* Anel orbital — só quando zoomed */}
               {zoomedSkill && (
                 <g style={{ opacity: 0.5 }}>
-                  <circle cx={CENTER_X} cy={CENTER_Y} r={ORBIT_RADIUS_ZOOMED} fill="none" stroke={SKILL_COLORS[zoomedSkill]} strokeWidth="0.8" strokeDasharray="3 6" opacity="0.4" />
+                  <circle cx={CENTER_X} cy={CENTER_Y} r={ORBIT_RADIUS_ZOOMED} fill="none" stroke={colors[zoomedSkill]} strokeWidth="0.8" strokeDasharray="3 6" opacity="0.4" />
                 </g>
               )}
 
@@ -422,15 +438,15 @@ export default function SkillMap({ user }) {
                   <tspan fill="#ff6200"> PRÁXIS</tspan>
                 </text>
                 <text x={CENTER_X} y={CENTER_Y + 16} textAnchor="middle" fontFamily="Jost, sans-serif" fontSize="9" fill={C_TEXT_SOFT} letterSpacing="2.5">PRÁTICA · DELIBERADA</text>
-                <text x={CENTER_X} y={CENTER_Y + 34} textAnchor="middle" fontFamily="Jost, sans-serif" fontStyle="italic" fontSize="13" fill={C_TEXT_MUTED}>cinco competências</text>
+                <text x={CENTER_X} y={CENTER_Y + 34} textAnchor="middle" fontFamily="Jost, sans-serif" fontStyle="italic" fontSize="13" fill={C_TEXT_MUTED}>{porExtenso(skills.length)} competências</text>
               </g>
 
               {/* Skills + suas órbitas */}
-              {[1, 2, 3, 4, 5].map((skillId) => {
-                const idx = skillId - 1;
-                const pentagonPos = getSkillPosition(idx);
-                const color = SKILL_COLORS[skillId];
-                const name = SKILL_NAMES[skillId];
+              {skills.map((skill, idx) => {
+                const skillId = skill.id;
+                const pentagonPos = getSkillPosition(idx, skills.length);
+                const color = skill.color;
+                const name = skill.name;
                 const exList = bySkill[skillId] || [];
                 const exPositions = getZoomedExercisePositions(exList.length);
                 const isHovered = hoveredNode === `skill-${skillId}`;
@@ -648,28 +664,28 @@ export default function SkillMap({ user }) {
           <div className="skill-map-footer">
             {zoomedSkill ? (
               <div className="skill-map-active-info">
-                <span className="swatch lg" style={{ background: SKILL_COLORS[zoomedSkill] }} />
+                <span className="swatch lg" style={{ background: colors[zoomedSkill] }} />
                 <div>
-                  <div className="active-eyebrow">Competência {zoomedSkill}</div>
-                  <div className="active-name">{SKILL_NAMES[zoomedSkill]}</div>
+                  <div className="active-eyebrow">Competência</div>
+                  <div className="active-name">{names[zoomedSkill]}</div>
                 </div>
                 <div className="active-meta">
-                  {bySkill[zoomedSkill].length === 0
+                  {(bySkill[zoomedSkill] || []).length === 0
                     ? 'Nenhum exercício cadastrado para esta competência ainda.'
                     : `${bySkill[zoomedSkill].length} ${bySkill[zoomedSkill].length === 1 ? 'exercício disponível' : 'exercícios disponíveis'} · clique num exercício para iniciar`}
                 </div>
               </div>
             ) : (
               <div className="skill-map-legend">
-                {[1, 2, 3, 4, 5].map((sid) => (
+                {skills.map((sk, i) => (
                   <button
-                    key={sid}
+                    key={sk.id}
                     className="legend-item legend-button"
-                    onClick={() => setZoomedSkill(sid)}
+                    onClick={() => setZoomedSkill(sk.id)}
                     title="Abrir esta competência"
                   >
-                    <span className="swatch" style={{ background: SKILL_COLORS[sid] }} />
-                    <span><strong style={{ color: 'var(--orange)' }}>{sid}.</strong> {SKILL_NAMES[sid]}</span>
+                    <span className="swatch" style={{ background: sk.color }} />
+                    <span><strong style={{ color: 'var(--orange)' }}>{i + 1}.</strong> {sk.name}</span>
                   </button>
                 ))}
               </div>

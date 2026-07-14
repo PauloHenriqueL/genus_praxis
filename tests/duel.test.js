@@ -1,7 +1,7 @@
 // IMPORTANTE: helpers seta as envs antes de importar o app — manter como 1º require.
 const {
   app, request, resetData, writeData, readData,
-  loginAs, loginVisitor, authHeader, makeLog, DATA_DIR,
+  loginAs, loginVisitor, loginVisitorFull, authHeader, makeLog, DATA_DIR,
 } = require('./helpers');
 const fs = require('fs');
 const path = require('path');
@@ -86,11 +86,19 @@ describe('duelos', () => {
       expect(byTok.body.challengerName).toBe('Aluno A');
     });
 
-    it('visitante não pode criar duelo → 403', async () => {
-      const visitor = await loginVisitor();
-      const res = await request(app).post('/api/duel').set(authHeader(visitor))
+    // Demanda #2: o visitante CRIA duelo. O 403 que sobrou é da D9 — ele desafiou um
+    // ALUNO (id '5'), e isso continua proibido. Os testes de arena vivem em security.
+    it('visitante cria duelo entre visitantes; contra ALUNO → 403 (D9)', async () => {
+      const v1 = await loginVisitorFull();
+
+      const contraAluno = await request(app).post('/api/duel').set(authHeader(v1.token))
         .send({ characterId: CHAR, opponentUserId: '5', inviteMethod: 'system' });
-      expect(res.status).toBe(403);
+      expect(contraAluno.status).toBe(403);
+
+      const v2 = await loginVisitorFull();
+      const contraVisitante = await request(app).post('/api/duel').set(authHeader(v1.token))
+        .send({ characterId: CHAR, opponentUserId: v2.id, inviteMethod: 'system' });
+      expect(contraVisitante.status).toBe(200);
     });
 
     it('characterId inexistente → 404', async () => {
@@ -114,17 +122,22 @@ describe('duelos', () => {
       expect(res.status).toBe(404);
     });
 
-    it('lista de oponentes traz terapeutas exceto você; nega visitante', async () => {
+    it('lista de oponentes traz os pares da MESMA arena (D9)', async () => {
+      const v = await loginVisitorFull();
+
       const aluno = await loginAs('aluno');
       const res = await request(app).get('/api/duel/opponents').set(authHeader(aluno));
       expect(res.status).toBe(200);
       const ids = res.body.map((o) => o.userId);
       expect(ids).toContain('5');
       expect(ids).toContain('6');
-      expect(ids).not.toContain('3');
-      expect(ids).not.toContain('2'); // supervisor não entra
-      const visitor = await loginVisitor();
-      expect((await request(app).get('/api/duel/opponents').set(authHeader(visitor))).status).toBe(403);
+      expect(ids).not.toContain('3');    // você mesmo
+      expect(ids).not.toContain('2');    // supervisor não entra
+      expect(ids).not.toContain(v.id);   // visitante é de outra arena (D9)
+
+      // E o visitante enxerga a arena dele: só visitantes, nunca alunos.
+      const doVisitante = (await request(app).get('/api/duel/opponents').set(authHeader(v.token))).body;
+      expect(doVisitante.map((o) => o.userId)).not.toContain('5');
     });
   });
 
@@ -370,19 +383,31 @@ describe('duelos', () => {
       expect(mmrFile.players['3'].n).toBe(11);
     });
 
-    it('competitivo contra visitante → ranked:false, reason:visitor', async () => {
-      const aluno = await loginAs('aluno');
-      seedMmr({ '3': { P: 60, n: 10, W: [] } });
-      const create = await request(app).post('/api/duel').set(authHeader(aluno))
+    // Demanda #2 — INVERSÃO do teste antigo (`ranked:false, reason:'visitor'`). Duelo de
+    // visitante agora RANQUEIA. É seguro justamente porque a D9 garante que os dois lados
+    // são da mesma arena: o rating do visitante nunca entra na conta de um aluno.
+    // (O antigo montava aluno × visitante — hoje esse aceite é 403; ver security.)
+    it('visitante × visitante competitivo → RANQUEIA (D3)', async () => {
+      const v1 = await loginVisitorFull();
+      const v2 = await loginVisitorFull();
+      // Os dois fora da calibração, senão o engine devolve unranked por outro motivo.
+      seedMmr({ [v1.id]: { P: 60, n: 10, W: [] }, [v2.id]: { P: 60, n: 10, W: [] } });
+
+      const create = await request(app).post('/api/duel').set(authHeader(v1.token))
         .send({ characterId: CHAR, inviteMethod: 'whatsapp', mode: 'competitive' });
       const { id: duelId, token } = create.body;
-      const visitor = await loginVisitor();
-      await request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(visitor));
-      await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(visitor)).send({ messages: msgsB, durationSeconds: 60 });
-      await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(aluno)).send({ messages: msgsA, durationSeconds: 60 });
-      const done = await waitCompleted(aluno, duelId);
-      expect(done.body.result.mmr.ranked).toBe(false);
-      expect(done.body.result.mmr.reason).toBe('visitor');
+
+      await request(app).post(`/api/duel/by-token/${token}/accept`).set(authHeader(v2.token));
+      await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(v2.token)).send({ messages: msgsB, durationSeconds: 60 });
+      await request(app).post(`/api/duel/${duelId}/submit`).set(authHeader(v1.token)).send({ messages: msgsA, durationSeconds: 60 });
+
+      const done = await waitCompleted(v1.token, duelId);
+      expect(done.body.result.mmr.ranked).toBe(true);
+      expect(done.body.result.mmr.reason).toBeUndefined();
+      // E o rating dos DOIS visitantes foi persistido.
+      const store = readData('mmr.json');
+      expect(store.players[v1.id].n).toBe(11);
+      expect(store.players[v2.id].n).toBe(11);
     });
   });
 

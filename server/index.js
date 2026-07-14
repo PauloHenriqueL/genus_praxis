@@ -10,6 +10,11 @@ const rateLimit = require('express-rate-limit');
 const { buildExercisePrompt, buildFreeplayPrompt, wrapCustomEvaluatorPrompt } = require('./prompts');
 const { finalScoreFromCriteria, comparativeScores } = require('./scoring');
 const mmrEngine = require('./mmr');
+const {
+  FEATURES, FEATURE_ROLES, featureRoleOf,
+  defaultFeatureAccess, normalizeFeatureAccess, canUseFeature,
+} = require('./features');
+const { defaultSkills, nextSkillId, sanitizeSkill } = require('./skills');
 const { extractBlocos } = require('./entrevistador/blocos');
 
 const app = express();
@@ -163,11 +168,44 @@ async function withFileLock(file, fn) {
   }
 }
 
-// --- Papéis: apenas Aluno (therapist), Professor (supervisor) e Administrador (admin). ---
+// --- Papéis. `visitor` NÃO entra em VALID_ROLES: ele não pode ser criado pelo
+// admin em /api/admin/users, só pelo cadastro em /api/login/visitor. ---
 const VALID_ROLES = ['therapist', 'supervisor', 'admin'];
 const DEFAULT_PROFILE = { email: '', profilePhoto: '' };
 
 function hashSync(plain) { return bcrypt.hashSync(String(plain), BCRYPT_ROUNDS); }
+
+// =====================================================================
+// CADASTRO DO VISITANTE (demanda #1)
+// =====================================================================
+// O visitante deixou de ser efêmero: agora é um usuário de verdade em users.json,
+// com nome, e-mail e telefone — os três obrigatórios e únicos.
+//
+// ⚠ Ele NÃO tem senha (decisão D1). Informar nome+e-mail+telefone JÁ é o login:
+// quem digitar os dados de um visitante existente entra na conta dele. É captura
+// de lead, não autenticação. Não coloque nada sensível atrás do papel `visitor`.
+
+/**
+ * Telefone BR no formato mais permissivo possível (decisão D2): o que importa é o
+ * lead conseguir entrar, não a validação perfeita.
+ * Guarda só os dígitos; aceita com/sem máscara, com/sem +55.
+ * Retorna null se não parecer um telefone brasileiro (10 ou 11 dígitos).
+ */
+function normalizePhone(v) {
+  const digits = String(v == null ? '' : v).replace(/\D/g, '');
+  // +55 11 91234-5678 → 12 ou 13 dígitos: descarta o código do país.
+  const local = (digits.length === 12 || digits.length === 13) && digits.startsWith('55')
+    ? digits.slice(2)
+    : digits;
+  // 10 = fixo com DDD; 11 = celular com o 9.
+  return (local.length === 10 || local.length === 11) ? local : null;
+}
+
+/** E-mail: checagem deliberadamente frouxa — algo@algo.algo. */
+function normalizeEmail(v) {
+  const email = String(v == null ? '' : v).trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email) ? email : null;
+}
 
 // Seed inicial (só na primeira execução, quando users.json ainda não existe).
 //
@@ -216,11 +254,56 @@ if (!fs.existsSync(path.join(DATA_DIR, 'achievements.json'))) writeJSON('achieve
 if (!fs.existsSync(path.join(DATA_DIR, 'mmr.json'))) writeJSON('mmr.json', { players: {}, characters: {} });
 if (!fs.existsSync(path.join(DATA_DIR, 'duels.json'))) writeJSON('duels.json', []);
 if (!fs.existsSync(path.join(DATA_DIR, 'notifications.json'))) writeJSON('notifications.json', {});
+// Competências da trilha (demandas #5a/#5b). Nasce com as 5 originais.
+if (!fs.existsSync(path.join(DATA_DIR, 'skills.json'))) writeJSON('skills.json', defaultSkills());
+
 if (!fs.existsSync(path.join(DATA_DIR, 'settings.json'))) {
   writeJSON('settings.json', {
     evaluatorEnabled: process.env.EVALUATOR_ENABLED === 'true',
-    visitorEvaluationEnabled: false,
+    featureAccess: defaultFeatureAccess(),
   });
+} else {
+  // MIGRAÇÃO (demanda #4). Um settings.json que já existe — de um deploy rodando — não
+  // tem `featureAccess`. Sem isto, o `visitorEvaluationEnabled` que o admin tinha LIGADO
+  // seria descartado em silêncio (o default de `avaliacao.visitante` é false), e ele
+  // descobriria pelo aluno reclamando que a avaliação sumiu.
+  const s = readJSON('settings.json', {});
+  if (!s.featureAccess) {
+    s.featureAccess = defaultFeatureAccess();
+    if ('visitorEvaluationEnabled' in s) {
+      s.featureAccess.avaliacao.visitante = !!s.visitorEvaluationEnabled;
+      delete s.visitorEvaluationEnabled; // absorvido pela matriz
+    }
+    writeJSON('settings.json', s);
+    console.log('[migração] settings.json ganhou featureAccess (demanda #4).');
+  }
+}
+
+// MIGRAÇÃO (demanda #7, decisão D7). Pacientes que já existem nascem BLOQUEADOS para
+// aluno e visitante — o admin decide quem libera, conscientemente.
+//
+// ⚠ CONSEQUÊNCIA DIRETA, e ela é grande: depois deste deploy **ninguém consegue praticar**
+// até o admin entrar em /admin/freeplay e liberar. O sistema "quebra" sem quebrar — nada
+// dá erro, os cards simplesmente somem. Por isso o aviso no log é gritado, e por isso isto
+// está no checklist de deploy.
+//
+// Um paciente NOVO (criado pelo admin depois disto) nasce LIBERADO: `canUsePatient` trata
+// campo ausente como liberado, e seria absurdo o admin criar um paciente e ele "não
+// aparecer". A D7 fala dos EXISTENTES, não do comportamento futuro.
+{
+  const chars = readJSON('freeplay-characters.json', []);
+  const semCampo = chars.filter((c) => c.allowStudent === undefined && c.allowVisitor === undefined);
+  if (semCampo.length) {
+    for (const c of chars) {
+      if (c.allowStudent === undefined) c.allowStudent = false;
+      if (c.allowVisitor === undefined) c.allowVisitor = false;
+    }
+    writeJSON('freeplay-characters.json', chars);
+    console.log(
+      `[migração] ${semCampo.length} paciente(s) BLOQUEADO(S) para aluno e visitante (demanda #7/D7).\n`
+      + '           ⚠ NINGUÉM consegue praticar até um admin liberar em Admin → Personagens.',
+    );
+  }
 }
 
 // --- Diagnóstico de startup ---
@@ -248,9 +331,10 @@ function publicUser(u) {
   return safe;
 }
 function signToken(user) {
+  // O visitante agora é um usuário de verdade em users.json (demanda #1), então o
+  // token não precisa mais carregar a identidade dele — o `sub` basta, como para
+  // qualquer outro papel.
   const payload = { sub: user.id, role: user.role, username: user.username };
-  // Visitante não existe em users.json — o token carrega a identidade inteira.
-  if (user.isVisitor || user.role === 'visitor') { payload.isVisitor = true; payload.name = user.name; }
   return jwt.sign(payload, JWT_SECRET, { expiresIn: TOKEN_TTL });
 }
 function getTokenFromReq(req) {
@@ -262,13 +346,24 @@ function requireAuth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Não autenticado' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    // Visitante é efêmero: reconstruído do próprio token, sem tocar users.json.
-    if (payload.isVisitor || payload.role === 'visitor') {
-      req.user = { id: payload.sub, username: payload.username, name: payload.name || 'Visitante', role: 'visitor', teacherId: null, isVisitor: true };
-      return next();
-    }
+    // Todo mundo — inclusive o visitante — é lido do users.json a cada request.
+    // Isso é o que permite barrar um visitante expirado (demanda #8) mesmo com o JWT
+    // ainda válido: quem manda é o disco, não o token.
     const user = readJSON('users.json').find((u) => u.id === payload.sub);
     if (!user) return res.status(401).json({ error: 'Sessão inválida' });
+
+    // Demanda #8. O JWT vale 7 dias (TOKEN_TTL), mas o acesso do visitante pode durar
+    // 1 hora — então NÃO dá para confiar no token. A checagem é a cada request, contra
+    // o disco. É 403 (não 401) de propósito: 401 dispara o `onSessionExpired` do client,
+    // que faz logout e joga na tela de login; aqui queremos a tela de "acesso expirado".
+    if (isVisitor(user) && visitorAccessExpired(user)) {
+      return res.status(403).json({
+        error: 'Seu acesso de visitante expirou. Fale com a administração para renovar.',
+        code: 'VISITOR_EXPIRED',
+        visitorExpired: true,
+      });
+    }
+
     req.user = user;
     next();
   } catch {
@@ -283,9 +378,205 @@ function requireRole(...roles) {
   };
 }
 function isAdmin(user) { return !!(user && user.role === 'admin'); }
-// Visitante: usuário efêmero (não existe em users.json). Fica fora de
-// ranking, MMR, notificações e criação de duelos.
+// Visitante: usuário REAL em users.json (demanda #1), com as mesmas permissões de
+// aluno (demanda #2). O que ele NÃO compartilha com o aluno é a arena: ranking, MMR
+// e duelo são segmentados por papel (D3/D9) — ver `peerRole`.
 function isVisitor(user) { return !!(user && (user.role === 'visitor' || user.isVisitor)); }
+
+// A "arena" de um jogador: com quem ele compete e em que ranking aparece.
+// Aluno joga com aluno; visitante joga com visitante (D3/D9). É a chave única de
+// segmentação — ranking, lista de oponentes e aceite de duelo passam todos por aqui,
+// para não haver duas noções divergentes de "meu par".
+function peerRole(user) { return isVisitor(user) ? 'visitor' : 'therapist'; }
+function samePeerGroup(a, b) { return !!a && !!b && peerRole(a) === peerRole(b); }
+
+// =====================================================================
+// ACESSO A FUNCIONALIDADES (demanda #4) — a matriz funcionalidade × papel
+// =====================================================================
+// Duas camadas de enforcement, e SÓ A SEGUNDA é segurança:
+//   1. a sidebar desenha o cadeado (UX, demanda #3);
+//   2. `requireFeature` devolve 403 — quem digitar a URL na mão bate aqui.
+// O catálogo canônico vive em `server/features.js`; o client não inventa chaves.
+
+const LOCKED_MESSAGE_DEFAULT =
+  'Esta funcionalidade não está liberada para o seu perfil. Fale com o seu professor '
+  + 'ou com a administração para liberar o acesso.';
+
+function readFeatureAccess() {
+  return normalizeFeatureAccess(readJSON('settings.json', {}).featureAccess);
+}
+
+// A mensagem do cadeado é UMA SÓ para todas as funcionalidades (D6).
+function lockedFeatureMessage() {
+  const s = readJSON('settings.json', {});
+  const msg = typeof s.lockedFeatureMessage === 'string' ? s.lockedFeatureMessage.trim() : '';
+  return msg || LOCKED_MESSAGE_DEFAULT;
+}
+
+/** `{ duelo: true, ranking: false, ... }` para o usuário logado. */
+function myFeatureMap(user) {
+  const access = readFeatureAccess();
+  const out = {};
+  for (const f of FEATURES) out[f.key] = canUseFeature(access, user, f.key);
+  return out;
+}
+
+/**
+ * Middleware. Admin e professor passam sempre (`featureRoleOf` devolve null): o acesso
+ * deles vem do papel, não da matriz — e bloquear o admin seria se trancar para fora.
+ *
+ * O 403 leva `feature` + `lockedMessage` para o client abrir o mesmo pop-up do cadeado
+ * quando o usuário chega pela URL direta.
+ */
+function requireFeature(key) {
+  return (req, res, next) => {
+    if (canUseFeature(readFeatureAccess(), req.user, key)) return next();
+    return res.status(403).json({
+      error: lockedFeatureMessage(),
+      feature: key,
+      locked: true,
+    });
+  };
+}
+
+// =====================================================================
+// COMPETÊNCIAS DA TRILHA (demandas #5a e #5b)
+// =====================================================================
+// `skills.json` é a fonte única: nome, cor e CRITÉRIOS de cada competência. Os critérios
+// não são decoração — eles entram no system prompt do paciente (`buildExercisePrompt`) e
+// definem como o aluno é avaliado naquela competência.
+
+function readSkills() {
+  const list = readJSON('skills.json', []);
+  return Array.isArray(list) ? list : [];
+}
+
+/** O texto de critérios de uma competência. Vazio se ela não existe mais (órfão, D4). */
+function skillCriteriaFor(skillId) {
+  const s = readSkills().find((x) => String(x.id) === String(skillId));
+  return s ? (s.criteria || '') : '';
+}
+
+/**
+ * Marca d'água dos ids de competência já emitidos.
+ *
+ * Exercícios e logs "lembram" os ids que usaram — mas se ninguém referenciava a
+ * competência apagada, essa memória não existe, e o id seria reciclado. Esta marca
+ * persiste o maior id já emitido, e nunca regride.
+ */
+function skillIdFloor() {
+  const s = readJSON('settings.json', {});
+  return Number(s.skillIdFloor) || 0;
+}
+async function bumpSkillIdFloor(id) {
+  const n = Number(id) || 0;
+  if (n <= skillIdFloor()) return;
+  await withFileLock('settings.json', () => {
+    const s = readJSON('settings.json', {});
+    if ((Number(s.skillIdFloor) || 0) < n) {
+      s.skillIdFloor = n;
+      writeJSON('settings.json', s);
+    }
+  });
+}
+
+/** Quantos exercícios apontam para cada competência (e quantos ficaram órfãos). */
+function exerciseCountBySkill() {
+  const skills = readSkills();
+  const ids = new Set(skills.map((s) => String(s.id)));
+  const counts = {};
+  let orphans = 0;
+  for (const ex of readJSON('exercises.json', [])) {
+    const sid = String(ex.skillId);
+    if (ids.has(sid)) counts[sid] = (counts[sid] || 0) + 1;
+    else orphans += 1;   // skillId nulo, vazio ou de uma competência apagada
+  }
+  return { counts, orphans };
+}
+
+// =====================================================================
+// VALIDADE DO ACESSO DO VISITANTE (demanda #8)
+// =====================================================================
+// O visitante é um lead: ele entra sem senha (D1) e o acesso tem prazo. Passado o prazo,
+// ele é barrado até um admin renovar.
+//
+// ⚠ O JWT vale 7 dias, mas o acesso pode durar 1 hora — por isso a checagem lê o
+// `users.json` a cada request (em `requireAuth`), em vez de confiar no token.
+
+// Catálogo das durações oferecidas. O client escolhe daqui — não inventa valores.
+const VISITOR_DURATIONS = [
+  { key: '1h', label: '1 hora', ms: 60 * 60 * 1000 },
+  { key: '1d', label: '1 dia', ms: 24 * 60 * 60 * 1000 },
+  { key: '3d', label: '3 dias', ms: 3 * 24 * 60 * 60 * 1000 },
+  { key: '1w', label: '1 semana', ms: 7 * 24 * 60 * 60 * 1000 },
+  { key: '1m', label: '1 mês', ms: 30 * 24 * 60 * 60 * 1000 },
+  // Escape hatch: uma turma em visita, um evento. Sem isto, o admin acabaria
+  // desbloqueando na mão toda hora.
+  { key: 'unlimited', label: 'Sem prazo', ms: null },
+];
+const VISITOR_DURATION_DEFAULT = '3d';
+
+function visitorDuration(key) {
+  return VISITOR_DURATIONS.find((d) => d.key === key) || null;
+}
+
+/** A duração padrão VIGENTE, definida pelo admin. */
+function defaultVisitorDurationKey() {
+  const s = readJSON('settings.json', {});
+  return visitorDuration(s.visitorAccessDuration) ? s.visitorAccessDuration : VISITOR_DURATION_DEFAULT;
+}
+
+/**
+ * A data em que expira um acesso que começa AGORA, com a duração padrão vigente.
+ * `null` = sem prazo.
+ */
+function newVisitorExpiry() {
+  const d = visitorDuration(defaultVisitorDurationKey());
+  return d && d.ms ? new Date(Date.now() + d.ms).toISOString() : null;
+}
+
+/**
+ * O acesso deste visitante venceu?
+ *
+ * Sem `accessExpiresAt` → NÃO expirado. É o caso do visitante que já existia antes desta
+ * demanda: ele não é retroativamente barrado (o admin define o prazo dos próximos, ou
+ * bloqueia este na mão). Falhar aberto aqui é a escolha segura — o contrário derrubaria
+ * leads antigos sem ninguém entender por quê.
+ */
+function visitorAccessExpired(user) {
+  if (!user) return false;
+  if (user.blocked) return true;                       // bloqueio manual do admin
+  if (!user.accessExpiresAt) return false;             // sem prazo
+  const t = Date.parse(user.accessExpiresAt);
+  if (!Number.isFinite(t)) return false;               // data corrompida: não tranca ninguém
+  return t <= Date.now();
+}
+
+// =====================================================================
+// ACESSO A PACIENTES (demanda #7) — quem pode atender cada personagem
+// =====================================================================
+// `allowStudent` / `allowVisitor` no personagem de Simulação. Admin e professor veem
+// todos (precisam revisar o material).
+//
+// ⚠ Esconder o card em `GET /api/freeplay` NÃO é bloqueio: sem o guard nas rotas que
+// recebem um `itemId`, dava para conversar com um paciente bloqueado direto pela API —
+// o card some, o acesso continua. Todo caminho que resolve um paciente passa por
+// `canUsePatient`.
+
+/** Um paciente sem os campos (base antiga, antes da migração) é tratado como LIBERADO. */
+function canUsePatient(user, character) {
+  if (!character) return false;
+  if (isAdmin(user) || (user && user.role === 'supervisor')) return true;
+  const key = isVisitor(user) ? 'allowVisitor' : 'allowStudent';
+  return character[key] !== false;
+}
+
+function patientBlockedResponse(res) {
+  return res.status(403).json({
+    error: 'Este paciente não está liberado para o seu perfil.',
+    patientLocked: true,
+  });
+}
 // Aluno vê o próprio; professor e admin veem todos (aba "Todos os logs").
 function canSeeAllLogs(user) { return !!(user && (user.role === 'admin' || user.role === 'supervisor')); }
 
@@ -301,12 +592,85 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   res.json({ token: signToken(user), user: publicUser(user) });
 });
 
-// Visitante: usuário efêmero, NÃO gravado em users.json. O token carrega tudo.
-// Fica fora de ranking, MMR, notificações e criação de duelos.
-app.post('/api/login/visitor', visitorLimiter, (req, res) => {
-  const id = 'visitor-' + crypto.randomBytes(6).toString('hex');
-  const visitorUser = { id, username: id, name: 'Visitante', role: 'visitor', teacherId: null, isVisitor: true };
-  res.json({ token: signToken(visitorUser), user: visitorUser });
+// Cadastro/entrada do visitante (demanda #1).
+//
+// O visitante é um usuário REAL em users.json (role: 'visitor'), com nome, e-mail e
+// telefone — os três obrigatórios e únicos.
+//
+// ⚠ NÃO tem senha (D1): informar os dados JÁ é o login. Quem repetir e-mail + telefone
+// de um visitante existente ENTRA NA CONTA DELE (não cria duplicata). É captura de
+// lead, não autenticação.
+app.post('/api/login/visitor', visitorLimiter, async (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name == null ? '' : body.name).trim();
+  const email = normalizeEmail(body.email);
+  const phone = normalizePhone(body.phone);
+
+  const errors = [];
+  if (name.length < 2) errors.push({ field: 'name', error: 'Informe seu nome.' });
+  if (!email) errors.push({ field: 'email', error: 'E-mail inválido.' });
+  if (!phone) errors.push({ field: 'phone', error: 'Telefone inválido. Use DDD + número.' });
+  if (errors.length) return res.status(400).json({ error: errors[0].error, fields: errors });
+
+  const result = await withFileLock('users.json', () => {
+    const users = readJSON('users.json');
+
+    // Já se cadastrou antes? Volta para a MESMA conta (não duplica).
+    const existing = users.find((u) => u.role === 'visitor' && u.email === email && u.phone === phone);
+    if (existing) {
+      // ⚠ FURO ÓBVIO se não checarmos aqui: um visitante EXPIRADO refaria o cadastro com
+      // os mesmos dados, cairia neste ramo e receberia um token novo — burlando o prazo
+      // sem esforço nenhum. Quem renova é o admin (demanda #8), não o próprio lead.
+      if (visitorAccessExpired(existing)) {
+        return {
+          status: 403,
+          code: 'VISITOR_EXPIRED',
+          error: 'Seu acesso de visitante expirou. Fale com a administração para renovar.',
+        };
+      }
+      return { user: existing };
+    }
+
+    // Os três campos são únicos — e a colisão é checada contra TODOS os papéis:
+    // um visitante não pode "assumir" o e-mail de um aluno.
+    if (users.some((u) => u.email && u.email.toLowerCase() === email)) {
+      return { status: 409, field: 'email', error: 'Este e-mail já está cadastrado.' };
+    }
+    if (users.some((u) => u.phone && u.phone === phone)) {
+      return { status: 409, field: 'phone', error: 'Este telefone já está cadastrado.' };
+    }
+    if (users.some((u) => u.name && u.name.trim().toLowerCase() === name.toLowerCase())) {
+      return { status: 409, field: 'name', error: 'Este nome já está cadastrado.' };
+    }
+
+    const id = nextUserId(users);
+    const user = {
+      id,
+      username: `visitor-${id}`,
+      name,
+      email,
+      phone,
+      role: 'visitor',
+      teacherId: null,
+      profilePhoto: '',
+      createdAt: new Date().toISOString(),
+      // Demanda #8: o prazo é carimbado no cadastro, com a duração padrão VIGENTE.
+      // Mudar o padrão depois NÃO recalcula quem já entrou (D8).
+      accessExpiresAt: newVisitorExpiry(),
+      blocked: false,
+    };
+    users.push(user);
+    writeJSON('users.json', users);
+    return { user };
+  });
+
+  if (result.error) {
+    const body = { error: result.error };
+    if (result.field) body.field = result.field;
+    if (result.code) { body.code = result.code; body.visitorExpired = true; }
+    return res.status(result.status).json(body);
+  }
+  res.json({ token: signToken(result.user), user: publicUser(result.user) });
 });
 
 app.get('/api/me', requireAuth, (req, res) => res.json({ user: publicUser(req.user) }));
@@ -444,7 +808,27 @@ app.put('/api/admin/users/:id', requireAuth, requireRole('admin'), async (req, r
     merged.teacherId = merged.role === 'therapist'
       ? (req.body.teacherId !== undefined ? (req.body.teacherId || null) : current.teacherId)
       : null;
-    if (!VALID_ROLES.includes(merged.role)) return { status: 400, error: 'Função inválida' };
+
+    // `visitor` não está em VALID_ROLES: ninguém é PROMOVIDO a visitante (só o cadastro
+    // da #1 cria um). Mas o admin precisa poder EDITAR um visitante que já existe — sem
+    // esta exceção, salvar a linha dele devolvia "Função inválida" (demanda #6).
+    const rolesPermitidos = current.role === 'visitor' ? [...VALID_ROLES, 'visitor'] : VALID_ROLES;
+    if (!rolesPermitidos.includes(merged.role)) return { status: 400, error: 'Função inválida' };
+
+    // Converter um lead em aluno/professor/admin EXIGE definir uma senha.
+    //
+    // O visitante entra sem senha (D1), então ele não tem `passwordHash`. Promovê-lo sem
+    // senha criava uma CONTA MORTA: o login por senha exige o hash, e o login de visitante
+    // só recupera quem tem `role: 'visitor'` — a pessoa perdia as duas portas de entrada,
+    // em silêncio, e o admin achava que tinha feito a coisa certa.
+    if (current.role === 'visitor' && merged.role !== 'visitor' && !req.body.password && !current.passwordHash) {
+      return {
+        status: 400,
+        field: 'password',
+        error: 'Defina uma senha para converter este visitante em uma conta com login.',
+      };
+    }
+
     const errors = validateUserPayload(merged, users, { isUpdate: true, currentUser: current });
     if (errors.length) return { status: 400, error: errors.join('; ') };
     if (req.body.password) {
@@ -459,7 +843,12 @@ app.put('/api/admin/users/:id', requireAuth, requireRole('admin'), async (req, r
     writeJSON('users.json', users);
     return { user: publicUser(merged) };
   });
-  if (result.error) return res.status(result.status).json({ error: result.error });
+  if (result.error) {
+    // `field` (quando presente) diz ao formulário QUAL campo destacar.
+    const body = { error: result.error };
+    if (result.field) body.field = result.field;
+    return res.status(result.status).json(body);
+  }
   res.json(result.user);
 });
 
@@ -504,6 +893,7 @@ app.get('/api/admin/export', requireAuth, requireRole('admin'), (req, res) => {
     exportedBy: req.user.username,
     data: {
       users: readJSON('users.json'),
+      skills: readSkills(),
       exercises: readJSON('exercises.json'),
       freeplayCharacters: readJSON('freeplay-characters.json'),
       progress: readJSON('progress.json', {}),
@@ -671,7 +1061,7 @@ function computeEarnedAchievements(userLogs, streak, exercises, freeplay) {
   return earned;
 }
 
-app.get('/api/gamification/:userId', requireAuth, async (req, res) => {
+app.get('/api/gamification/:userId', requireAuth, requireFeature('objetivos'), async (req, res) => {
   if (!canAccessUser(req.user, req.params.userId)) return res.status(403).json({ error: 'Acesso negado' });
   const userId = req.params.userId;
   const userLogs = readJSON('logs.json').filter((l) => l.userId === userId);
@@ -714,8 +1104,7 @@ app.get('/api/gamification/:userId', requireAuth, async (req, res) => {
 
 // Título exibido no perfil/ranking. Revalida a posse server-side: o cliente
 // nunca decide qual título possui.
-app.post('/api/me/title', requireAuth, async (req, res) => {
-  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não possui títulos.' });
+app.post('/api/me/title', requireAuth, requireFeature('objetivos'), async (req, res) => {
   const titleId = req.body && req.body.titleId ? String(req.body.titleId) : '';
 
   if (titleId) {
@@ -748,13 +1137,17 @@ function titleOf(user) {
   return def ? { id: def.id, title: def.title, tier: def.tier } : null;
 }
 
-app.get('/api/ranking', requireAuth, (req, res) => {
-  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não acessa o ranking.' });
+// Ranking da arena do requisitante (D3): aluno vê alunos, visitante vê visitantes.
+// Os dois lados leem o MESMO `mmr.json` (chaveado por userId) — o que separa as duas
+// tabelas é só este filtro por papel. Admin/professor não competem, então enxergam o
+// ranking dos alunos (é o que eles supervisionam).
+app.get('/api/ranking', requireAuth, requireFeature('ranking'), (req, res) => {
+  const arena = peerRole(req.user);
   const store = readMmr();
   const users = readJSON('users.json');
 
   const rows = users
-    .filter((u) => store.players[u.id] && store.players[u.id].n > 0)
+    .filter((u) => u.role === arena && store.players[u.id] && store.players[u.id].n > 0)
     .map((u) => {
       const view = mmrEngine.playerView(store.players[u.id]);
       return {
@@ -777,10 +1170,7 @@ app.get('/api/ranking', requireAuth, (req, res) => {
   res.json(rows);
 });
 
-app.get('/api/me/mmr', requireAuth, (req, res) => {
-  if (isVisitor(req.user)) {
-    return res.json({ n: 0, calibrating: true, matchesRemaining: mmrEngine.CALIBRATION_MATCHES, mmr: null, visitor: true });
-  }
+app.get('/api/me/mmr', requireAuth, requireFeature('competitivo'), (req, res) => {
   const store = readMmr();
   res.json(mmrEngine.playerView(store.players[req.user.id]));
 });
@@ -802,7 +1192,10 @@ app.post('/api/admin/ranking/reset', requireAuth, requireRole('admin'), async (r
 const NOTIF_MAX_PER_USER = 100;
 
 function pushNotification(userId, notif) {
-  if (!userId || String(userId).startsWith('visitor-')) return; // visitante não recebe
+  // O visitante agora recebe notificações como qualquer aluno (demanda #2). O guard
+  // antigo (`startsWith('visitor-')`) virou letra morta quando o id passou a ser
+  // numérico — removido em vez de "consertado", porque o bloqueio não é mais desejado.
+  if (!userId) return;
   return withFileLock('notifications.json', () => {
     const all = readJSON('notifications.json', {});
     const list = all[userId] || [];
@@ -818,14 +1211,12 @@ function pushNotification(userId, notif) {
 }
 
 app.get('/api/notifications', requireAuth, (req, res) => {
-  if (isVisitor(req.user)) return res.json({ items: [], unread: 0 });
   const all = readJSON('notifications.json', {});
   const items = all[req.user.id] || [];
   res.json({ items, unread: items.filter((n) => !n.read).length });
 });
 
 app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
-  if (isVisitor(req.user)) return res.json({ ok: true });
   await withFileLock('notifications.json', () => {
     const all = readJSON('notifications.json', {});
     const list = all[req.user.id] || [];
@@ -836,7 +1227,6 @@ app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
 });
 
 app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
-  if (isVisitor(req.user)) return res.json({ ok: true });
   await withFileLock('notifications.json', () => {
     const all = readJSON('notifications.json', {});
     all[req.user.id] = (all[req.user.id] || []).map((n) => ({ ...n, read: true }));
@@ -855,7 +1245,8 @@ function publicCharacter(c) {
   const { specificInstruction, evaluationCriteria, evaluatorPrompt, ...safe } = c;
   return safe;
 }
-const FREEPLAY_FIELDS = ['name', 'age', 'description', 'assistantId', 'specificInstruction', 'evaluationCriteria'];
+// `allowStudent` / `allowVisitor`: quem pode atender este paciente (demanda #7).
+const FREEPLAY_FIELDS = ['name', 'age', 'description', 'assistantId', 'specificInstruction', 'evaluationCriteria', 'allowStudent', 'allowVisitor'];
 const EXERCISE_FIELDS = ['skillId', 'title', 'description', 'difficulty', 'specificInstruction', 'evaluatorPrompt'];
 function pickFields(body, fields) {
   const out = {};
@@ -865,10 +1256,17 @@ function pickFields(body, fields) {
 
 // Fábrica de CRUD: os dois tipos têm exatamente a mesma forma de rota, mudando
 // só o arquivo, o prefixo de id e os campos aceitos.
-function mountCharacterCrud(routePath, file, idPrefix, fields, decorate) {
+//
+// `visibleTo(user, char)` (opcional) esconde da LISTAGEM o que o usuário não pode usar.
+// É só UX: quem barra de verdade são os guards nas rotas que recebem um `itemId`.
+function mountCharacterCrud(routePath, file, idPrefix, fields, decorate, visibleTo) {
   app.get(routePath, requireAuth, (req, res) => {
     const list = readJSON(file);
-    const shaped = list.map((c) => (isAdmin(req.user) ? c : publicCharacter(c)));
+    // O admin vê tudo, inclusive o que está bloqueado — é ele quem libera.
+    const visible = (visibleTo && !isAdmin(req.user))
+      ? list.filter((c) => visibleTo(req.user, c))
+      : list;
+    const shaped = visible.map((c) => (isAdmin(req.user) ? c : publicCharacter(c)));
     res.json(decorate ? decorate(shaped) : shaped);
   });
 
@@ -918,8 +1316,128 @@ function decorateFreeplayWithMmr(list) {
   });
 }
 
-mountCharacterCrud('/api/freeplay', 'freeplay-characters.json', 'fp', FREEPLAY_FIELDS, decorateFreeplayWithMmr);
+mountCharacterCrud('/api/freeplay', 'freeplay-characters.json', 'fp', FREEPLAY_FIELDS, decorateFreeplayWithMmr, canUsePatient);
 mountCharacterCrud('/api/exercises', 'exercises.json', 'ex', EXERCISE_FIELDS, null);
+
+// =====================================================================
+// CRUD DE COMPETÊNCIAS (demandas #5a e #5b)
+// =====================================================================
+
+// Todo mundo lê: o SkillMap desenha o polígono a partir daqui (o número de lados vem do
+// tamanho desta lista — não há mais pentágono hardcoded).
+app.get('/api/skills', requireAuth, (req, res) => {
+  const skills = readSkills();
+  if (!isAdmin(req.user)) {
+    // O aluno não precisa dos `criteria` — é material de avaliação, e vazá-lo entrega o
+    // que a IA procura. Nome, cor e ordem bastam para desenhar a trilha.
+    return res.json(skills.map(({ id, name, color }) => ({ id, name, color })));
+  }
+  const { counts, orphans } = exerciseCountBySkill();
+  res.json(skills.map((sk) => ({ ...sk, exerciseCount: counts[String(sk.id)] || 0, orphans })));
+});
+
+app.post('/api/admin/skills', requireAuth, requireRole('admin'), async (req, res) => {
+  // Os ids já USADOS por exercícios e logs entram na conta do próximo id: sem isso, apagar
+  // uma competência e criar outra a faria nascer com o MESMO id, herdando os exercícios
+  // órfãos da apagada — que voltariam à trilha ligados à competência errada.
+  const usedIds = [
+    ...readJSON('exercises.json', []).map((e) => e.skillId),
+    ...readJSON('logs.json', []).map((l) => l.skillId),
+  ].filter((v) => v != null);
+
+  const result = await withFileLock('skills.json', () => {
+    const skills = readSkills();
+    const { skill, errors } = sanitizeSkill(req.body, {
+      id: nextSkillId(skills, usedIds, skillIdFloor()),
+    });
+    if (errors.length) return { status: 400, error: errors[0].error, fields: errors };
+    skills.push(skill);
+    writeJSON('skills.json', skills);
+    return { skill };
+  });
+  if (result.error) return res.status(result.status).json({ error: result.error, fields: result.fields });
+  await bumpSkillIdFloor(result.skill.id);
+  res.json(result.skill);
+});
+
+app.put('/api/admin/skills/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  const result = await withFileLock('skills.json', () => {
+    const skills = readSkills();
+    const idx = skills.findIndex((s) => String(s.id) === String(req.params.id));
+    if (idx === -1) return { status: 404, error: 'Competência não encontrada.' };
+    // O id é imutável: os exercícios e os logs apontam para ele.
+    const { skill, errors } = sanitizeSkill(req.body, { id: skills[idx].id });
+    if (errors.length) return { status: 400, error: errors[0].error, fields: errors };
+    skills[idx] = skill;
+    writeJSON('skills.json', skills);
+    return { skill };
+  });
+  if (result.error) return res.status(result.status).json({ error: result.error, fields: result.fields });
+  res.json(result.skill);
+});
+
+// Reordenar: a ordem da lista é a ordem dos vértices no polígono do SkillMap.
+app.post('/api/admin/skills/reorder', requireAuth, requireRole('admin'), async (req, res) => {
+  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.map(String) : null;
+  if (!ids) return res.status(400).json({ error: 'ids deve ser uma lista.' });
+
+  const result = await withFileLock('skills.json', () => {
+    const skills = readSkills();
+    if (ids.length !== skills.length) return { status: 400, error: 'A lista precisa conter todas as competências.' };
+    const byId = new Map(skills.map((s) => [String(s.id), s]));
+    const ordered = ids.map((id) => byId.get(id));
+    if (ordered.some((s) => !s)) return { status: 400, error: 'Id desconhecido na lista.' };
+    writeJSON('skills.json', ordered);
+    return { skills: ordered };
+  });
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result.skills);
+});
+
+// DELETE — deixa os exercícios ÓRFÃOS (decisão D4: não bloqueia, não realoca).
+//
+// ⚠ Órfão NÃO é neutro, e é por isso que a rota informa quantos serão afetados:
+//   • o exercício some da trilha (o SkillMap só desenha o que tem competência);
+//   • o system prompt do paciente monta SEM os critérios daquela competência;
+//   • os logs antigos continuam com o skillId apagado gravado.
+// O client mostra isso na confirmação. `?confirm=1` é obrigatório — sem ele, a rota
+// responde 409 com a contagem, para o admin não apagar às cegas.
+app.delete('/api/admin/skills/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  const skills = readSkills();
+  const alvo = skills.find((s) => String(s.id) === String(req.params.id));
+  if (!alvo) return res.status(404).json({ error: 'Competência não encontrada.' });
+
+  const afetados = readJSON('exercises.json', []).filter((e) => String(e.skillId) === String(alvo.id));
+  if (req.query.confirm !== '1') {
+    return res.status(409).json({
+      error: 'Confirmação necessária.',
+      needsConfirm: true,
+      skillName: alvo.name,
+      orphanCount: afetados.length,
+    });
+  }
+
+  // Antes de apagar, registra o id na marca d'água — é ESTE o momento em que ele corre o
+  // risco de ser reciclado: some da lista viva e, se nenhum exercício o referenciava,
+  // ninguém mais lembraria que ele existiu.
+  await bumpSkillIdFloor(alvo.id);
+
+  await withFileLock('skills.json', () => {
+    writeJSON('skills.json', readSkills().filter((s) => String(s.id) !== String(req.params.id)));
+  });
+  res.json({ ok: true, orphanCount: afetados.length });
+});
+
+// Exercícios órfãos: apontam para uma competência que não existe mais (ou para nenhuma).
+// Ficam invisíveis na trilha — esta rota é o que permite ao admin encontrá-los e
+// reatribuí-los, em vez de eles sumirem em silêncio.
+app.get('/api/admin/skills/orphans', requireAuth, requireRole('admin'), (req, res) => {
+  const ids = new Set(readSkills().map((s) => String(s.id)));
+  const orfaos = readJSON('exercises.json', [])
+    .filter((e) => !ids.has(String(e.skillId)))
+    .map((e) => ({ id: e.id, title: e.title, skillId: e.skillId ?? null }));
+  res.json(orfaos);
+});
 
 // Progresso da trilha (exercícios concluídos por usuário).
 app.get('/api/progress/:userId', requireAuth, (req, res) => {
@@ -1150,11 +1668,23 @@ app.post('/api/logs', requireAuth, writeLimiter, async (req, res) => {
     writeJSON('logs.json', logs);
   });
 
-  // Partida ranqueada: só freeplay competitivo, com nota numérica e usuário real.
-  // O resultado volta no corpo da resposta (`mmr`) para a sessão exibir o card
-  // de pós-partida; se o cálculo falhar, o log já está salvo e `mmr` fica ausente.
+  // Partida ranqueada: só freeplay competitivo, com nota numérica. O visitante
+  // TAMBÉM pontua (demanda #2) — o que o separa do aluno é o ranking em que ele
+  // aparece (D3), não o direito de pontuar. O resultado volta no corpo da resposta
+  // (`mmr`) para a sessão exibir o card de pós-partida; se o cálculo falhar, o log
+  // já está salvo e `mmr` fica ausente.
+  //
+  // Paciente bloqueado (demanda #7) NÃO pontua. Repare que o log em si **é salvo**: se o
+  // admin bloquear no meio de uma sessão já em andamento, o aluno não pode perder o
+  // trabalho que já fez. O que ele não leva é o MMR de um paciente que não deveria estar
+  // atendendo. (O `/api/chat` já barra o início de qualquer sessão nova.)
+  const patientOk = log.type !== 'freeplay' || canUsePatient(
+    req.user,
+    readJSON('freeplay-characters.json').find((c) => String(c.id) === String(log.itemId)),
+  );
+
   let mmrResult = null;
-  if (mode === 'competitive' && log.type === 'freeplay' && Number.isFinite(finalScore) && !isVisitor(req.user)) {
+  if (mode === 'competitive' && log.type === 'freeplay' && Number.isFinite(finalScore) && patientOk) {
     try {
       mmrResult = await withFileLock('mmr.json', () => {
         const store = readJSON('mmr.json', { players: {}, characters: {} });
@@ -1288,14 +1818,17 @@ function loadEntrevistadorPrompt() {
 // Resolve o system prompt do paciente server-side (nunca confia no cliente).
 // Dois tipos: 'exercise' usa o prompt da trilha (com skillId); 'freeplay' usa o
 // prompt de simulação livre.
-function resolveChatPrompt(type, itemId) {
+// `user` serve ao gate da demanda #7: é AQUI que o bloqueio de paciente vale de verdade.
+// Esconder o card na listagem não impede um POST /api/chat com o itemId na mão.
+function resolveChatPrompt(type, itemId, user) {
   if (type === 'exercise') {
     const e = readJSON('exercises.json').find((x) => String(x.id) === String(itemId));
     if (!e) return { status: 404, error: 'Exercício não encontrado' };
-    return { systemPrompt: buildExercisePrompt(e.skillId, e.specificInstruction), character: e };
+    return { systemPrompt: buildExercisePrompt(skillCriteriaFor(e.skillId), e.specificInstruction), character: e };
   }
   const c = readJSON('freeplay-characters.json').find((x) => String(x.id) === String(itemId));
   if (!c) return { status: 404, error: 'Personagem não encontrado' };
+  if (!canUsePatient(user, c)) return { status: 403, patientLocked: true, error: 'Este paciente não está liberado para o seu perfil.' };
   return { systemPrompt: buildFreeplayPrompt(c.specificInstruction), character: c };
 }
 
@@ -1321,8 +1854,12 @@ app.post('/api/chat', requireAuth, aiLimiter, async (req, res) => {
     if (!context || typeof context !== 'object' || !context.itemId) {
       return res.status(400).json({ error: 'context é obrigatório (type + itemId)' });
     }
-    const resolved = resolveChatPrompt(context.type, context.itemId);
-    if (resolved.error) return res.status(resolved.status).json({ error: resolved.error });
+    const resolved = resolveChatPrompt(context.type, context.itemId, req.user);
+    if (resolved.error) {
+      const body = { error: resolved.error };
+      if (resolved.patientLocked) body.patientLocked = true;
+      return res.status(resolved.status).json(body);
+    }
     systemPrompt = resolved.systemPrompt;
   }
 
@@ -1412,8 +1949,13 @@ app.post('/api/evaluate', requireAuth, aiLimiter, async (req, res) => {
     // agradecimento e o log é salvo para análise humana.
     return res.json({ role: 'assistant', content: '', disabled: true });
   }
-  // Visitante só é avaliado se o admin ligar explicitamente (custo de IA).
-  if (isVisitor(req.user) && !readJSON('settings.json', {}).visitorEvaluationEnabled) {
+  // A avaliação virou uma feature da matriz (demanda #4) — o antigo
+  // `visitorEvaluationEnabled` é hoje `featureAccess.avaliacao.visitante`.
+  //
+  // ⚠ Aqui NÃO usamos `requireFeature`: a avaliação desligada responde `{disabled:true}`
+  // com 200, e o cliente conta com isso para encerrar a sessão com o agradecimento. Um
+  // 403 quebraria o fim da sessão — o bloqueio é de FEEDBACK, não de acesso à tela.
+  if (!canUseFeature(readFeatureAccess(), req.user, 'avaliacao')) {
     return res.json({ role: 'assistant', content: '', disabled: true });
   }
   const openai = getOpenAI();
@@ -1486,19 +2028,88 @@ app.post('/api/transcribe', requireAuth, aiLimiter, async (req, res) => {
 // =====================================================================
 // CONFIGURAÇÕES
 // =====================================================================
+// O client monta a sidebar (e o cadeado da demanda #3) a partir daqui. Mandamos o
+// CATÁLOGO junto com a matriz para ele não precisar hardcodar as chaves nem os rótulos.
 app.get('/api/settings', requireAuth, (req, res) => {
   const s = readJSON('settings.json', {});
-  res.json({ evaluatorEnabled: !!s.evaluatorEnabled, visitorEvaluationEnabled: !!s.visitorEvaluationEnabled });
+  res.json({
+    evaluatorEnabled: !!s.evaluatorEnabled,
+    lockedFeatureMessage: lockedFeatureMessage(),
+    featureAccess: readFeatureAccess(),
+    features: FEATURES.map(({ key, label, description }) => ({ key, label, description })),
+    featureRoles: FEATURE_ROLES,
+    // Demanda #8: o catálogo de durações + o padrão vigente (o client escolhe daqui).
+    visitorDurations: VISITOR_DURATIONS.map(({ key, label }) => ({ key, label })),
+    visitorAccessDuration: defaultVisitorDurationKey(),
+    // A feature do usuário LOGADO, já resolvida: o client não recalcula a regra.
+    myFeatures: myFeatureMap(req.user),
+  });
 });
+
 app.put('/api/admin/settings', requireAuth, requireRole('admin'), async (req, res) => {
   const saved = await withFileLock('settings.json', () => {
     const s = readJSON('settings.json', {});
     if ('evaluatorEnabled' in (req.body || {})) s.evaluatorEnabled = !!req.body.evaluatorEnabled;
-    if ('visitorEvaluationEnabled' in (req.body || {})) s.visitorEvaluationEnabled = !!req.body.visitorEvaluationEnabled;
+    if ('lockedFeatureMessage' in (req.body || {})) {
+      s.lockedFeatureMessage = clampStr(req.body.lockedFeatureMessage, 600);
+    }
+    // Demanda #8 / D8: mudar o padrão afeta só os visitantes NOVOS. Ninguém que já tem
+    // `accessExpiresAt` é recalculado — o prazo dele foi combinado no cadastro.
+    if ('visitorAccessDuration' in (req.body || {}) && visitorDuration(req.body.visitorAccessDuration)) {
+      s.visitorAccessDuration = req.body.visitorAccessDuration;
+    }
+    // Merge por chave: mandar só `{featureAccess:{duelo:{visitante:false}}}` não zera o resto.
+    if (req.body && typeof req.body.featureAccess === 'object' && req.body.featureAccess) {
+      const cur = normalizeFeatureAccess(s.featureAccess);
+      for (const [key, row] of Object.entries(req.body.featureAccess)) {
+        if (!cur[key] || !row || typeof row !== 'object') continue;   // chave desconhecida: ignora
+        for (const role of FEATURE_ROLES) {
+          if (role in row) cur[key][role] = !!row[role];
+        }
+      }
+      s.featureAccess = cur;
+    }
     writeJSON('settings.json', s);
     return s;
   });
-  res.json({ evaluatorEnabled: !!saved.evaluatorEnabled, visitorEvaluationEnabled: !!saved.visitorEvaluationEnabled });
+  res.json({
+    evaluatorEnabled: !!saved.evaluatorEnabled,
+    lockedFeatureMessage: lockedFeatureMessage(),
+    featureAccess: normalizeFeatureAccess(saved.featureAccess),
+    visitorAccessDuration: defaultVisitorDurationKey(),
+  });
+});
+
+// --- Acesso do visitante: bloquear / renovar (demanda #8) ---
+//
+// D8: ao RENOVAR, o visitante recebe a duração padrão VIGENTE — não a que valia quando ele
+// se cadastrou. Ele "renasce" com a regra atual.
+app.post('/api/admin/users/:id/visitor-access', requireAuth, requireRole('admin'), async (req, res) => {
+  const action = req.body && req.body.action;
+  if (!['renew', 'block'].includes(action)) {
+    return res.status(400).json({ error: 'action deve ser "renew" ou "block".' });
+  }
+
+  const result = await withFileLock('users.json', () => {
+    const users = readJSON('users.json');
+    const idx = users.findIndex((u) => u.id === req.params.id);
+    if (idx === -1) return { status: 404, error: 'Usuário não encontrado' };
+    if (users[idx].role !== 'visitor') {
+      return { status: 400, error: 'Só o acesso de visitante tem prazo.' };
+    }
+
+    if (action === 'block') {
+      users[idx].blocked = true;
+    } else {
+      users[idx].blocked = false;
+      users[idx].accessExpiresAt = newVisitorExpiry();  // duração padrão VIGENTE (D8)
+    }
+    writeJSON('users.json', users);
+    return { user: users[idx] };
+  });
+
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(publicUser(result.user));
 });
 
 // =====================================================================
@@ -1683,9 +2294,10 @@ async function runComparativeEvaluation(duel) {
 
 // --- MMR do duelo (PvP) ---
 function applyDuelMmr(duel, comp) {
-  // Só duelo competitivo entre dois usuários reais é ranqueado.
+  // Só duelo competitivo é ranqueado. Duelo de visitante TAMBÉM ranqueia (demanda #2):
+  // como visitante só duela com visitante (D9), o rating dele nunca contamina o dos
+  // alunos — as duas arenas moram no mesmo `mmr.json`, separadas na leitura.
   if (duel.mode !== 'competitive') return { ranked: false, reason: 'training' };
-  if (duel.challenger.isVisitor || duel.opponent.isVisitor) return { ranked: false, reason: 'visitor' };
 
   const store = readMmr();
   const pA = store.players[duel.challenger.userId] || mmrEngine.newPlayer();
@@ -1788,26 +2400,32 @@ async function finalizeDuel(duelId) {
   }
 }
 
-// Oponentes disponíveis (outros alunos).
-app.get('/api/duel/opponents', requireAuth, (req, res) => {
-  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não cria duelos.' });
-  const users = readJSON('users.json').filter((u) => u.role === 'therapist' && u.id !== req.user.id);
+// Oponentes disponíveis: os pares da MESMA arena (D9). Aluno vê alunos, visitante vê
+// visitantes. Admin/professor não duelam entre si — caem na arena dos alunos.
+app.get('/api/duel/opponents', requireAuth, requireFeature('duelo'), (req, res) => {
+  const arena = peerRole(req.user);
+  const users = readJSON('users.json').filter((u) => u.role === arena && u.id !== req.user.id);
   res.json(users.map((u) => ({ userId: u.id, name: u.name, profilePhoto: u.profilePhoto || '' })));
 });
 
 // Criar duelo.
-app.post('/api/duel', requireAuth, writeLimiter, async (req, res) => {
-  if (isVisitor(req.user)) return res.status(403).json({ error: 'Visitante não cria duelos.' });
+app.post('/api/duel', requireAuth, requireFeature('duelo'), writeLimiter, async (req, res) => {
   const { characterId, opponentUserId, inviteMethod, mode } = req.body || {};
   const character = readJSON('freeplay-characters.json').find((c) => String(c.id) === String(characterId));
   if (!character) return res.status(404).json({ error: 'Personagem de simulação não encontrado.' });
+  // Demanda #7: não dá para duelar num paciente que você não pode atender.
+  if (!canUsePatient(req.user, character)) return patientBlockedResponse(res);
 
   const method = inviteMethod === 'system' ? 'system' : 'link';
   let opponent = null;
   if (method === 'system') {
-    const target = readJSON('users.json').find((u) => u.id === opponentUserId && u.role === 'therapist');
+    const target = readJSON('users.json').find((u) => u.id === opponentUserId);
     if (!target) return res.status(404).json({ error: 'Oponente não encontrado.' });
     if (target.id === req.user.id) return res.status(400).json({ error: 'Não é possível duelar consigo mesmo.' });
+    // D9: visitante duela só com visitante. Sem isso, um duelo entre arenas alimentaria
+    // os dois rankings ao mesmo tempo — e o `GET /api/duel/opponents` nem lista o outro
+    // lado, então chegar aqui significa id forjado no corpo do request.
+    if (!samePeerGroup(req.user, target)) return res.status(403).json({ error: 'Você só pode duelar com jogadores do mesmo grupo.' });
     opponent = { ...duelIdentity(target), state: 'invited', accepted: false, messages: [] };
   }
 
@@ -1862,11 +2480,19 @@ function acceptDuel(duel, user) {
   if (duel.inviteMethod === 'system' && duel.opponent && duel.opponent.userId !== user.id) {
     return { status: 403, error: 'Este convite é de outro usuário.' };
   }
+  // D9, no ponto que importa: o convite por LINK não escolhe o oponente — quem abre o
+  // link se auto-adiciona. É aqui que um visitante entraria num duelo de aluno (e
+  // vice-versa), alimentando os dois rankings de uma vez. O papel do desafiante já
+  // veio gravado em `duelIdentity`, então basta comparar as arenas.
+  const challengerArena = duel.challenger.isVisitor ? 'visitor' : 'therapist';
+  if (challengerArena !== peerRole(user)) {
+    return { status: 403, error: 'Você só pode duelar com jogadores do mesmo grupo.' };
+  }
   duel.opponent = { ...duelIdentity(user), state: 'in_progress', accepted: true, messages: [] };
   return { ok: true };
 }
 
-app.post('/api/duel/:id/accept', requireAuth, async (req, res) => {
+app.post('/api/duel/:id/accept', requireAuth, requireFeature('duelo'), async (req, res) => {
   const out = await withFileLock('duels.json', () => {
     const all = readDuels();
     const duel = all.find((d) => d.id === req.params.id);
@@ -1880,7 +2506,7 @@ app.post('/api/duel/:id/accept', requireAuth, async (req, res) => {
   res.json(publicDuel(out.duel, req.user));
 });
 
-app.post('/api/duel/by-token/:token/accept', requireAuth, async (req, res) => {
+app.post('/api/duel/by-token/:token/accept', requireAuth, requireFeature('duelo'), async (req, res) => {
   const out = await withFileLock('duels.json', () => {
     const all = readDuels();
     const duel = all.find((d) => d.token === req.params.token);
@@ -1982,8 +2608,7 @@ app.get('/api/duel/:id/export', requireAuth, (req, res) => {
 });
 
 // Feed social: duelos agrupados por oponente.
-app.get('/api/duels/social', requireAuth, (req, res) => {
-  if (isVisitor(req.user)) return res.json([]);
+app.get('/api/duels/social', requireAuth, requireFeature('logsSociais'), (req, res) => {
   pruneExpiredDuels();
   const mine = readDuels().filter((d) => duelSideFor(d, req.user));
   const byOpponent = new Map();
@@ -2020,7 +2645,7 @@ app.get('/api/duels/social', requireAuth, (req, res) => {
 // =====================================================================
 // PROGRESSÃO (compara atendimento #1 vs #2 do mesmo paciente)
 // =====================================================================
-app.get('/api/progression/available-patients', requireAuth, (req, res) => {
+app.get('/api/progression/available-patients', requireAuth, requireFeature('progressao'), (req, res) => {
   const logs = readJSON('logs.json').filter((l) => l.userId === req.user.id && l.itemId && Array.isArray(l.messages) && l.messages.length > 0);
   const byItem = new Map();
   for (const l of logs) {
@@ -2030,18 +2655,23 @@ app.get('/api/progression/available-patients', requireAuth, (req, res) => {
   const freeplay = readJSON('freeplay-characters.json');
   const out = [...byItem.values()].map((l) => {
     const c = freeplay.find((x) => String(x.id) === String(l.itemId));
-    return c ? { id: c.id, name: c.name, age: c.age, description: c.description, photoIcon: c.photoIcon || null, lastAttendanceAt: l.timestamp } : null;
+    // Paciente bloqueado sai da lista mesmo que a pessoa já o tenha atendido antes: uma
+    // nova avaliação de progressão é uma chamada de IA sobre material que o admin fechou.
+    // (Os logs antigos continuam em /logs — aquilo é o trabalho dela, e não some.)
+    if (!c || !canUsePatient(req.user, c)) return null;
+    return { id: c.id, name: c.name, age: c.age, description: c.description, photoIcon: c.photoIcon || null, lastAttendanceAt: l.timestamp };
   }).filter(Boolean);
   res.json(out);
 });
 
-app.post('/api/progression/evaluate', requireAuth, aiLimiter, async (req, res) => {
+app.post('/api/progression/evaluate', requireAuth, requireFeature('progressao'), aiLimiter, async (req, res) => {
   const { characterId, messages } = req.body || {};
   if (!characterId || typeof characterId !== 'string') return res.status(400).json({ error: 'characterId é obrigatório.' });
   if (!Array.isArray(messages)) return res.status(400).json({ error: 'messages deve ser uma lista.' });
 
   const character = readJSON('freeplay-characters.json').find((c) => String(c.id) === String(characterId));
   if (!character) return res.status(404).json({ error: 'Personagem não encontrado.' });
+  if (!canUsePatient(req.user, character)) return patientBlockedResponse(res);
 
   // Atendimento #1: o log mais recente do usuário com esse personagem.
   const prior = readJSON('logs.json')

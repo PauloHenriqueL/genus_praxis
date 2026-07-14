@@ -6,6 +6,7 @@
 // arquivo de teste.
 
 const path = require('path');
+const { defaultSkills } = require('../server/skills');
 const fs = require('fs');
 const os = require('os');
 const bcrypt = require('bcryptjs');
@@ -103,6 +104,10 @@ function resetData(overrides = {}) {
   }
   const writes = {
     'users.json': defaultUsers(),
+    // Competências da trilha (demandas #5a/#5b). O resetData APAGA o DATA_DIR inteiro, e o
+    // bootstrap do servidor só roda no `require` — sem recriar aqui, todo teste veria ZERO
+    // competências e o `skillId` dos exercícios apontaria para o vazio.
+    'skills.json': defaultSkills(),
     'exercises.json': defaultExercises(),
     'freeplay-characters.json': defaultFreeplay(),
     'progress.json': {},
@@ -112,7 +117,9 @@ function resetData(overrides = {}) {
     'mmr.json': { players: {}, characters: {} },
     'duels.json': [],
     'notifications.json': {},
-    'settings.json': { evaluatorEnabled: false, visitorEvaluationEnabled: false },
+    // A matriz de acesso (demanda #4) fica AUSENTE de propósito: o servidor a completa com
+    // os defaults do catálogo (`normalizeFeatureAccess`), que é o estado de um sistema novo.
+    'settings.json': { evaluatorEnabled: false },
     ...overrides,
   };
   for (const [file, data] of Object.entries(writes)) {
@@ -135,12 +142,43 @@ async function loginAs(username, password = TEST_PASSWORD) {
   return res.body.token;
 }
 
-async function loginVisitor() {
-  const res = await request(app).post('/api/login/visitor').send({});
+// O visitante agora é um usuário REAL (demanda #1): precisa de nome, e-mail e
+// telefone, e os três são únicos. Cada chamada gera um visitante distinto — senão
+// a segunda chamada dentro do mesmo teste colidiria (409).
+let visitorSeq = 0;
+function visitorPayload(over = {}) {
+  visitorSeq += 1;
+  const n = String(visitorSeq).padStart(4, '0');
+  return {
+    name: `Visitante ${n}`,
+    email: `visitante${n}@teste.com`,
+    // 11 dígitos (celular com DDD), único por chamada.
+    phone: `1191${n}${n}`.slice(0, 11),
+    ...over,
+  };
+}
+
+async function loginVisitor(over = {}) {
+  const res = await request(app).post('/api/login/visitor').send(visitorPayload(over));
   if (res.status !== 200) {
     throw new Error(`Login visitante falhou: ${res.status} ${JSON.stringify(res.body)}`);
   }
   return res.body.token;
+}
+
+/**
+ * Como `loginVisitor`, mas devolve `{ token, id, user }`.
+ *
+ * Desde a demanda #1 o visitante é um usuário REAL (tem id em users.json), e desde a #2
+ * ele tem ranking e MMR próprios (D3). Testar arena exige o id — daí este helper, em vez
+ * de fazer o `loginVisitor` devolver uma string com propriedades penduradas.
+ */
+async function loginVisitorFull(over = {}) {
+  const res = await request(app).post('/api/login/visitor').send(visitorPayload(over));
+  if (res.status !== 200) {
+    throw new Error(`Login visitante falhou: ${res.status} ${JSON.stringify(res.body)}`);
+  }
+  return { token: res.body.token, id: res.body.user.id, user: res.body.user };
 }
 
 function authHeader(token) {
@@ -188,6 +226,8 @@ module.exports = {
   writeData,
   loginAs,
   loginVisitor,
+  loginVisitorFull,
+  visitorPayload,
   authHeader,
   dayKey,
   makeLog,

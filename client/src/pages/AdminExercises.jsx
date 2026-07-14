@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
 import Typewriter from '../components/Typewriter';
-import { SKILL_NAMES } from '../utils/skills';
+import { useSkillsContext, skillLabel } from '../utils/skills';
 import '../styles/Admin.css';
 
 const DIFFICULTY_OPTIONS = [
@@ -25,6 +25,7 @@ function difficultyLabel(value) {
 }
 
 export default function AdminExercises() {
+  const { skills, names } = useSkillsContext();
   const [exercises, setExercises] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -135,7 +136,7 @@ export default function AdminExercises() {
             <tbody>
               {exercises.map((ex) => (
                 <tr key={ex.id}>
-                  <td><span className="tag-pill">{SKILL_NAMES[ex.skillId] || `Competência ${ex.skillId}`}</span></td>
+                  <td><span className="tag-pill">{skillLabel(names, ex.skillId) || '— sem competência —'}</span></td>
                   <td style={{ fontWeight: 600, color: 'var(--text)' }}>{ex.title}</td>
                   <td>
                     <span className={`difficulty-pill difficulty-${ex.difficulty || 'iniciante'}`}>
@@ -171,7 +172,7 @@ export default function AdminExercises() {
                 <div style={{ flex: 2 }}>
                   <label htmlFor="skillId">Competência</label>
                   <select id="skillId" name="skillId" value={form.skillId} onChange={handleChange} required>
-                    {Object.entries(SKILL_NAMES).map(([sid, name]) => (
+                    {skills.map(({ id: sid, name }) => (
                       <option key={sid} value={sid}>{sid}. {name}</option>
                     ))}
                   </select>

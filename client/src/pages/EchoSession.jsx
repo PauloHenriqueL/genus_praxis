@@ -113,7 +113,7 @@ export default function EchoSession({ user, sessionType = 'freeplay' }) {
         if (cancelled) return;
         if (!found) { setError('Personagem não encontrado.'); return; }
         setItem(found);
-        if (!restoredRef.current && user?.id && user.role !== 'visitor') {
+        if (!restoredRef.current && user?.id) {
           restoredRef.current = true;
           const saved = await loadActiveSession(user.id, sessionType, autoItemId);
           if (cancelled) return;
@@ -135,7 +135,6 @@ export default function EchoSession({ user, sessionType = 'freeplay' }) {
   // Autosave. Visitantes não persistem.
   useEffect(() => {
     if (!sessionStarted || sessionEnded || !item || !user?.id || finishedRef.current) return;
-    if (user.role === 'visitor') return;
     const data = { messages, elapsedSeconds: elapsed, itemTitle: item.name, sessionNumber };
     sessionDataRef.current = data;
     saveLocal(user.id, sessionType, autoItemId, data);
@@ -149,7 +148,7 @@ export default function EchoSession({ user, sessionType = 'freeplay' }) {
 
   // Flush ao trocar de rota / fechar aba / background.
   useEffect(() => {
-    if (!sessionStarted || sessionEnded || !user?.id || user.role === 'visitor') return;
+    if (!sessionStarted || sessionEnded || !user?.id) return;
     function flush() {
       if (finishedRef.current) return;
       const data = sessionDataRef.current;

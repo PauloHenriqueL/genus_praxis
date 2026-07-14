@@ -1,5 +1,5 @@
 // IMPORTANTE: helpers seta as envs antes de importar o app — manter como 1º require.
-const { app, request, resetData, loginAs, authHeader } = require('./helpers');
+const { app, request, resetData, loginAs, loginVisitor, loginVisitorFull, readData, authHeader } = require('./helpers');
 const mmr = require('../server/mmr');
 
 describe('MMR engine — construtores e clamp', () => {
@@ -383,13 +383,19 @@ describe('MMR via API', () => {
     expect(sofia.specificInstruction).toBeUndefined();
   });
 
-  it('visitante não pontua MMR mesmo enviando mode competitive', async () => {
-    const visitor = await request(app).post('/api/login/visitor').send({});
-    const vtoken = visitor.body.token;
-    const res = await competitiveMatch(vtoken, 90);
+  // Demanda #2 / D3 — INVERSÃO consciente do teste anterior (que travava o visitante
+  // fora do MMR). Agora ele pontua como qualquer aluno; o que o separa é o ranking em
+  // que aparece (`GET /api/ranking` filtra por arena), não o direito de pontuar.
+  it('visitante PONTUA MMR (demanda #2)', async () => {
+    const v = await loginVisitorFull();
+    const res = await competitiveMatch(v.token, 90);
     expect(res.status).toBe(200);
-    // Visitante não alimenta o MMR: a chave `mmr` fica AUSENTE na resposta do Genus
-    // (o server só a inclui quando mmrResult é truthy — l.1132). Não é null explícito.
-    expect(res.body.mmr == null).toBe(true);
+
+    // Calibrando: o card vem sem o número, mas a partida FOI contada.
+    expect(res.body.mmr).toBeTruthy();
+    expect(res.body.mmr.n).toBe(1);
+
+    // E o rating foi mesmo persistido no mmr.json, sob o id real do visitante.
+    expect(readData('mmr.json').players[v.id].n).toBe(1);
   });
 });

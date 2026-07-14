@@ -105,7 +105,9 @@ export const demoApi = {
 
   // Recursos que dependem de servidor real (IA, MMR, duelos, notificações).
   // No modo demonstração aparecem vazios em vez de quebrar a página.
-  loginVisitor: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  // O cadastro de visitante exige servidor. O <Login> esconde o formulário no modo
+  // demonstração, então isto só seria alcançado por engano.
+  loginVisitor: (_payload) => Promise.reject(new Error('Cadastro de visitante indisponível no modo demonstração')),
   logout: () => { try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch {} },
   setMyTitle: () => delay({ ok: true }),
   getProfilePhotos: () => delay([]),
@@ -170,7 +172,25 @@ export const demoApi = {
   saveActiveSession: (t, i, d) => delay(d),
   clearActiveSession: () => delay({ ok: true }),
 
-  getSettings: () => delay({ evaluatorEnabled: false }),
+  // Modo demonstração: tudo liberado, sem avaliação por IA (não há servidor/chave).
+  // O shape acompanha o do servidor (demandas #3 e #4), senão a sidebar quebra.
+  getSkills: () => delay([
+    { id: 1, name: 'Hermenêutica', color: '#ff6200' },
+    { id: 2, name: 'Estrutura', color: '#7a34b8' },
+    { id: 3, name: 'Empatia', color: '#e05200' },
+    { id: 4, name: 'Especificidade do caso', color: '#b06adf' },
+    { id: 5, name: 'Eu', color: '#c14503' },
+  ]),
+  getSettings: () => delay({
+    evaluatorEnabled: false,
+    lockedFeatureMessage: '',
+    featureAccess: {},
+    features: [],
+    featureRoles: ['aluno', 'visitante'],
+    myFeatures: {},
+    visitorDurations: [],
+    visitorAccessDuration: '3d',
+  }),
   adminUpdateSettings: (d) => delay({ evaluatorEnabled: !!(d && d.evaluatorEnabled) }),
 
   adminListUsers: () => delay(users.map((u) => ({ ...u }))),

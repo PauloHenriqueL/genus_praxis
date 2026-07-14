@@ -42,7 +42,7 @@ export default function Duelo({ user }) {
   const isVisitor = user?.role === 'visitor';
 
   useEffect(() => {
-    // getDuelOpponents responde 403 para visitante — trate sem quebrar.
+    // Desde a demanda #2 o visitante também lista oponentes (só que da arena dele, D9).
     Promise.all([api.getFreeplay(), api.getDuelOpponents().catch(() => [])])
       .then(([chars, opps]) => {
         setCharacters(chars || []);
@@ -228,30 +228,35 @@ export default function Duelo({ user }) {
 
           <h3 className="duel-section-title">Quem você quer desafiar?</h3>
 
-          {/* Visitante / link aberto — só no treino (competitivo exige cadastro) */}
-          {mode !== 'competitive' && (
+          {/* Link aberto: quem abrir precisa ser da MESMA arena (D9) — um visitante não
+              pode aceitar o link de um aluno, e vice-versa (403 no aceite). */}
           <div className="card duel-visitor-card">
             <div className="duel-opp-info">
               <span className="duel-avatar">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="8" r="4" /><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" /></svg>
               </span>
               <div>
-                <div className="duel-opp-name">Duelar contra um visitante</div>
-                <div className="duel-opp-sub">Gera um link aberto — quem abrir entra como visitante e atende o mesmo paciente.</div>
+                <div className="duel-opp-name">Convidar por link</div>
+                <div className="duel-opp-sub">
+                  {isVisitor
+                    ? 'Gera um link aberto — quem abrir precisa estar logado como visitante.'
+                    : 'Gera um link aberto — quem abrir precisa ter conta de aluno.'}
+                </div>
               </div>
             </div>
             <div className="duel-opp-actions">
-              <button className="btn btn-ghost btn-sm" disabled={creating} onClick={() => startInvite({ method: 'whatsapp', opponentName: 'visitante' })}>
+              <button className="btn btn-ghost btn-sm" disabled={creating} onClick={() => startInvite({ method: 'whatsapp', opponentName: 'convidado' })}>
                 Gerar link / WhatsApp
               </button>
             </div>
           </div>
-          )}
 
           {/* Lista de alunos */}
           {opponents.length === 0 ? (
             <div className="card" style={{ textAlign: 'center', padding: '28px 24px', color: 'var(--text-soft)' }}>
-              Nenhum outro aluno cadastrado para desafiar. Você ainda pode duelar contra um visitante acima.
+              {isVisitor
+                ? 'Nenhum outro visitante para desafiar. Você ainda pode convidar por link acima.'
+                : 'Nenhum outro aluno cadastrado para desafiar. Você ainda pode convidar por link acima.'}
             </div>
           ) : (
             <div className="duel-opp-list">
