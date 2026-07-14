@@ -1795,7 +1795,10 @@ app.post('/api/logs', requireAuth, writeLimiter, async (req, res) => {
     sessionCount: Number.isFinite(body.sessionCount) ? Math.max(1, Math.floor(body.sessionCount)) : 1,
     score: finalScore,
     criteriaScores: explicitCriteria || supervisorCriteria || null,
-    evaluation: clampStr(cleanEvaluation, LOG_MAX_EVAL_LEN),
+    // Rede de segurança: se o texto salvo trouxer uma "Nota: X" divergente do `score` que o
+    // código calculou, ela é reescrita aqui também. Senão o log ficaria com a contradição
+    // gravada para sempre — o selo mostrando um número e a devolutiva, outro.
+    evaluation: clampStr(syncDisplayedScore(cleanEvaluation, finalScore), LOG_MAX_EVAL_LEN),
     messages: cleanMessages,
     userId: req.user.id,
     userName: req.user.name,
@@ -2158,7 +2161,18 @@ app.post('/api/evaluate', requireAuth, aiLimiter, async (req, res) => {
       payload = { role: 'assistant', content: clean, score };
     } else {
       const { clean, criteria } = extractSupervisorNotes(raw);
-      payload = { role: 'assistant', content: clean, score: finalScoreFromCriteria(criteria) };
+      const score = finalScoreFromCriteria(criteria);
+
+      // ⚠ O avaliador global pede à IA que escreva "**Nota: X/100**" como primeira linha da
+      // devolutiva. Mas quem calcula a nota de verdade é o CÓDIGO, a partir das notas por
+      // critério (`scoring.js`) — de propósito, porque a IA erra a conta. E erra mesmo:
+      // numa sessão real, os critérios somavam 54 e ela escreveu "67/100" no texto.
+      //
+      // Resultado: o selo mostrava 54 e a devolutiva dizia 67 — dois números para a mesma
+      // sessão, o mesmo defeito que a padronização 0–100 existe para eliminar. Aqui a linha
+      // que a IA escreveu é REESCRITA com a nota real. Ela continua ditando o formato; a
+      // aritmética é nossa.
+      payload = { role: 'assistant', content: syncDisplayedScore(clean, score), score };
       if (canSeeAllLogs(req.user)) payload.criteriaScores = criteria;
     }
     if (canSeeAllLogs(req.user)) payload.reasoning = raw;
@@ -2363,6 +2377,29 @@ function parseSupervisorPayload(payload) {
   }
 
   return Object.keys(out).length ? out : null;
+}
+
+/**
+ * Reescreve a nota que a IA imprimiu no texto com a nota REAL, calculada em código.
+ *
+ * O avaliador global manda a IA abrir a devolutiva com `**Nota: X/100**`. Mas a nota
+ * verdadeira sai do `scoring.js` (média das notas por critério) — a IA só chuta. Numa
+ * sessão real ela escreveu 67 enquanto os critérios davam 54: o selo e o texto se
+ * contradiziam.
+ *
+ * Casos tratados:
+ *   - sem `score` (a IA não emitiu critérios): o texto passa intacto — melhor manter o que
+ *     ela escreveu do que apagar a nota e deixar a devolutiva sem número nenhum;
+ *   - a IA esqueceu a linha: também passa intacto (o selo continua mostrando a nota certa);
+ *   - a linha existe: o número é trocado, o formato é preservado.
+ */
+function syncDisplayedScore(text, score) {
+  if (typeof text !== 'string' || !Number.isFinite(score)) return text;
+  // Aceita as variações que o modelo produz: **Nota: 67/100**, "Nota: 67 / 100", "NOTA: 67".
+  return text.replace(
+    /(\*{0,2}\s*nota\s*:\s*)(\d+(?:[.,]\d+)?)(\s*\/\s*100)?(\s*\*{0,2})/i,
+    (m, pre, _num, barra, pos) => `${pre}${score}${barra || '/100'}${pos}`,
+  );
 }
 
 function extractSupervisorNotes(evaluation) {

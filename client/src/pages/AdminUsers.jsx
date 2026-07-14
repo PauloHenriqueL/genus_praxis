@@ -206,8 +206,13 @@ export default function AdminUsers({ user: currentUser }) {
             <span className={`pill-status ${evalEnabled ? 'on' : 'off'}`}>{evalEnabled ? 'LIGADA' : 'DESLIGADA'}</span>
           </div>
           <p className="settings-row-desc">
-            Quando <strong>desligada</strong>, ao finalizar a sessão o aluno vê a tela de agradecimento e o log é salvo
-            para análise humana. Quando <strong>ligada</strong>, a IA avalia a sessão (requer a <code>OPENAI_API_KEY</code>).
+            <strong>Chave mestra.</strong> Desligada, ninguém é avaliado: ao finalizar a sessão a pessoa vê a
+            tela de agradecimento e o log fica salvo para análise humana. Ligada, a IA avalia a sessão
+            (requer a <code>OPENAI_API_KEY</code>).
+          </p>
+          <p className="settings-row-desc" style={{ marginTop: 6 }}>
+            <strong>Quem</strong> recebe a avaliação — aluno, visitante, ou só um dos dois — você escolhe em{' '}
+            <Link to="/admin/acessos">Acessos</Link>, na linha <em>Avaliação por IA</em>.
           </p>
           {evalError && <div className="alert error" style={{ marginTop: 8, marginBottom: 0 }}>{evalError}</div>}
         </div>
@@ -224,7 +229,9 @@ export default function AdminUsers({ user: currentUser }) {
           <div className="settings-row-title">Acesso às funcionalidades</div>
           <p className="settings-row-desc">
             Liberar ou bloquear Competitivo, Duelo, Progressão, Objetivos, Ranking e a
-            avaliação por IA — separadamente para <strong>alunos</strong> e <strong>visitantes</strong>.
+            <strong> Avaliação por IA</strong> — com uma caixa <strong>independente</strong> para{' '}
+            <strong>aluno</strong> e outra para <strong>visitante</strong>. Dá para liberar a avaliação só
+            para o visitante e bloquear para o aluno, ou o contrário.
           </p>
         </div>
         <Link className="btn btn-outline" to="/admin/acessos">Configurar</Link>

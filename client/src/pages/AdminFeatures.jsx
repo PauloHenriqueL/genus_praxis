@@ -19,6 +19,10 @@ export default function AdminFeatures() {
   const [access, setAccess] = useState({});
   const [message, setMessage] = useState('');
   // Demanda #8: a duração padrão do acesso de visitante.
+  // Estado da CHAVE MESTRA da avaliação (o toggle "Avaliação automática", em Contas).
+  // Sem ela, as caixas de "Avaliação por IA" não têm efeito — e o admin precisa saber
+  // disso na hora, senão marca a caixa e acha que o sistema ignorou.
+  const [evaluatorEnabled, setEvaluatorEnabled] = useState(true);
   const [durations, setDurations] = useState([]);
   const [duration, setDuration] = useState('');
   const [loading, setLoading] = useState(true);
@@ -35,6 +39,7 @@ export default function AdminFeatures() {
         setMessage(s.lockedFeatureMessage || '');
         setDurations(s.visitorDurations || []);
         setDuration(s.visitorAccessDuration || '');
+        setEvaluatorEnabled(!!s.evaluatorEnabled);
       })
       .catch((e) => setErr(e.message || 'Erro ao carregar as configurações.'))
       .finally(() => setLoading(false));
@@ -106,6 +111,14 @@ export default function AdminFeatures() {
           Administradores e professores não aparecem aqui: o acesso deles vem do papel e não é bloqueável.
         </p>
       </div>
+
+      {!evaluatorEnabled && (
+        <div className="alert" style={{ marginBottom: 18 }}>
+          A <strong>Avaliação automática</strong> está <strong>desligada</strong> em{' '}
+          <Link to="/admin/contas">Contas</Link> — é a chave mestra. Enquanto ela estiver desligada,
+          <strong> ninguém é avaliado</strong>, marque o que marcar na linha "Avaliação por IA" abaixo.
+        </div>
+      )}
 
       <div className="card">
         <h3 className="card-title">Quem pode usar o quê</h3>

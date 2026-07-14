@@ -877,3 +877,41 @@ o aluno lê. Selo e devolutiva concordam; o marcador `[NOTA:]` não vazou.
 
 Travado por teste + mutação (restaurar o wrapper antigo quebra 2 testes).
 **É uma divergência deliberada do All_OS**, que mantém o defeito.
+
+
+---
+
+# 📥 BACKLOG NOVO (não implementado)
+
+## 9. Anúncios do admin (pop-up no primeiro login)
+
+> As notificações atuais são genéricas, feitas em desenvolvimento — **limpar todas**. Quero
+> um lugar onde o administrador publique um anúncio, e ele apareça como **pop-up** para
+> cada usuário no primeiro login **depois** de o anúncio ser criado. Depois disso, ele vai
+> para a lista de notificações, que já existe.
+
+**Status:** ☐ A fazer · **Pontos: 5** (estimativa a confirmar)
+
+### O que já existe (e dá para reaproveitar)
+- `notifications.json` + `pushNotification(userId, notif)` — mas hoje a notificação é
+  **por usuário** e nasce de um evento (convite/resultado de duelo).
+- `GET /api/notifications`, `POST /api/notifications/:id/read`, `.../read-all`.
+- O `<NotificationBell>` no client já lista e marca como lida.
+
+### O que muda
+1. **Limpar o `notifications.json`** no deploy (as atuais são lixo de desenvolvimento).
+2. Um anúncio é **global**, não por usuário — replicar a mesma mensagem para N usuários
+   seria caro e não cobriria quem se cadastrar depois. Provavelmente um `announcements.json`
+   separado, e cada usuário guarda o que já viu (`lastSeenAnnouncementAt` ou a lista de ids).
+3. **Tela de admin** para escrever/publicar (e provavelmente despublicar).
+4. **Pop-up no primeiro login após a publicação** — "primeiro login depois que o anúncio foi
+   criado", não "toda vez". Depois de fechado, o anúncio continua na lista do sino.
+
+### ⚠ Pontos a decidir antes de codar
+- **Quem vê?** Todos, ou dá para segmentar por papel (só alunos, só visitantes)? A matriz de
+  acesso da demanda #4 já tem o vocabulário para isso.
+- **O visitante vê?** Ele é efêmero-ish (tem prazo, demanda #8).
+- **Um anúncio novo reabre o pop-up** para quem já tinha visto o anterior? (Sim, presumo —
+  senão o segundo anúncio nunca apareceria.)
+- **Retroativo?** Quem se cadastrar amanhã vê o anúncio de hoje? (Provavelmente sim, se ele
+  ainda estiver publicado.)

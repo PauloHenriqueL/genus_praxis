@@ -532,3 +532,98 @@ describe('escala: exercício e freeplay usam a MESMA régua (0–100)', () => {
     expect(score).toBeGreaterThan(80);
   });
 });
+
+// =====================================================================
+// 9. AVALIAÇÃO POR IA — controle INDEPENDENTE por papel (pedido do usuário)
+// =====================================================================
+// O admin precisa poder liberar o avaliador só para o VISITANTE e bloquear para o ALUNO —
+// e o contrário. O toggle antigo ("Avaliar sessões de visitante") só ligava/desligava o
+// visitante; o aluno sempre tinha. Hoje são duas caixas independentes na matriz de acesso.
+//
+// Há DOIS níveis, e confundi-los é o erro fácil:
+//   1. `evaluatorEnabled` — a CHAVE MESTRA (tela de Contas). Desligada, ninguém é avaliado.
+//   2. `featureAccess.avaliacao.{aluno,visitante}` — QUEM recebe (tela de Acessos).
+describe('avaliação por IA: aluno e visitante são independentes', () => {
+  const avaliar = (token) =>
+    request(app).post('/api/evaluate').set(authHeader(token))
+      .send({ context: { type: 'freeplay', itemId: CHAR }, messages: [{ role: 'user', content: 'x' }] });
+
+  // No harness não há OPENAI_API_KEY, então "liberado" = 503 (a chave falta) e "bloqueado"
+  // = 200 com `{disabled:true}`. O que importa é a DISTINÇÃO entre os dois.
+  const liberado = (res) => res.body.disabled !== true;
+
+  it('visitante COM avaliador, aluno SEM', async () => {
+    writeData('settings.json', {
+      evaluatorEnabled: true,
+      featureAccess: { avaliacao: { aluno: false, visitante: true } },
+    });
+    const aluno = await loginAs('aluno');
+    const v = await loginVisitorFull();
+
+    expect(liberado(await avaliar(aluno))).toBe(false);
+    expect(liberado(await avaliar(v.token))).toBe(true);
+  });
+
+  it('aluno COM avaliador, visitante SEM (o inverso)', async () => {
+    writeData('settings.json', {
+      evaluatorEnabled: true,
+      featureAccess: { avaliacao: { aluno: true, visitante: false } },
+    });
+    const aluno = await loginAs('aluno');
+    const v = await loginVisitorFull();
+
+    expect(liberado(await avaliar(aluno))).toBe(true);
+    expect(liberado(await avaliar(v.token))).toBe(false);
+  });
+
+  // A chave mestra vence a matriz: é ela que protege a conta da OpenAI.
+  it('chave mestra DESLIGADA → ninguém é avaliado, marque o que marcar', async () => {
+    writeData('settings.json', {
+      evaluatorEnabled: false,
+      featureAccess: { avaliacao: { aluno: true, visitante: true } },
+    });
+    const aluno = await loginAs('aluno');
+    const v = await loginVisitorFull();
+
+    expect(liberado(await avaliar(aluno))).toBe(false);
+    expect(liberado(await avaliar(v.token))).toBe(false);
+  });
+});
+
+// =====================================================================
+// 10. A NOTA NO TEXTO É A NOTA DO SISTEMA (achado ao vivo)
+// =====================================================================
+describe('a devolutiva não contradiz o selo', () => {
+  // 🔴 ACHADO EM PRODUÇÃO. O avaliador global manda a IA abrir a devolutiva com
+  // "**Nota: X/100**" — mas quem calcula a nota de verdade é o CÓDIGO, a partir das notas
+  // por critério (a IA erra a conta, por isso o design é esse). E ela errou mesmo: numa
+  // sessão real os critérios somavam 54 e ela escreveu "67/100".
+  //
+  // O aluno via 54 no selo e 67 no texto. Dois números para a mesma sessão — exatamente o
+  // defeito que a padronização 0–100 existe para eliminar.
+  it('a "Nota: X" que a IA escreveu é reescrita com a nota calculada', async () => {
+    const admin = await loginAs('admin');
+    await request(app).post('/api/logs').set(authHeader(admin)).send({
+      type: 'freeplay', itemId: CHAR, mode: 'training',
+      messages: [{ role: 'user', content: 'oi' }],
+      // A IA chutou 67; os critérios dão (8+7)/20 → 75.
+      evaluation: '**Nota: 67/100**\n\nFeedback.\n\n[notas-supervisor]\n1: 8\n2: 7',
+    });
+
+    const log = readData('logs.json')[0];
+    expect(log.score).toBe(75);
+    expect(log.evaluation).toContain('**Nota: 75/100**');
+    expect(log.evaluation).not.toContain('67');   // o chute da IA sumiu
+  });
+
+  it('sem nota calculada, o texto passa intacto (não apagamos o que a IA escreveu)', async () => {
+    const admin = await loginAs('admin');
+    await request(app).post('/api/logs').set(authHeader(admin)).send({
+      type: 'freeplay', itemId: CHAR, mode: 'training',
+      messages: [{ role: 'user', content: 'oi' }],
+      evaluation: '**Nota: 67/100**\n\nFeedback sem bloco de critérios.',
+    });
+    // Melhor manter o número da IA do que deixar a devolutiva sem nota nenhuma.
+    expect(readData('logs.json')[0].evaluation).toContain('67');
+  });
+});

@@ -57,7 +57,7 @@ const FEATURES = [
   {
     key: 'avaliacao',
     label: 'Avaliação por IA',
-    description: 'Feedback automático ao fim da sessão. CUSTA uma chamada de IA por avaliação.',
+    description: 'Feedback automático ao fim da sessão, por papel. CUSTA uma chamada de IA por avaliação. Depende da "Avaliação automática" (a chave mestra, em Contas) estar ligada.',
     defaults: { aluno: true, visitante: false },
   },
 ];
