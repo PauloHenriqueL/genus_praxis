@@ -117,6 +117,7 @@ function resetData(overrides = {}) {
     'mmr.json': { players: {}, characters: {} },
     'duels.json': [],
     'notifications.json': {},
+    'announcements.json': [],
     // A matriz de acesso (demanda #4) fica AUSENTE de propósito: o servidor a completa com
     // os defaults do catálogo (`normalizeFeatureAccess`), que é o estado de um sistema novo.
     'settings.json': { evaluatorEnabled: false },

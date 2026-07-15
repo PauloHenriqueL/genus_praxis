@@ -316,5 +316,9 @@ describe('GET /api/admin/export', () => {
     expect(res.headers['content-disposition']).toMatch(/attachment/);
     expect(res.body.data).toBeTruthy();
     expect(res.body.data.settings).toBeTruthy();
+    // O backup precisa ser COMPLETO — inclui as coleções que as demandas novas criaram.
+    for (const chave of ['users', 'skills', 'announcements', 'settings']) {
+      expect(res.body.data, chave).toHaveProperty(chave);
+    }
   });
 });

@@ -891,7 +891,7 @@ prioridade sugerida — tudo levantado na sessão de 2026-07-14:
 | # | o que é | tamanho | decisão? |
 |---|---|---|---|
 | ~~**10**~~ | ~~Desligar o TTL de 30 dias dos logs~~ | ~~2 pts~~ | ✅ **FEITA** |
-| **9** | **Anúncios do admin** — publicar um aviso que vira pop-up no 1º login e depois entra na lista de notificações; e **limpar as notificações genéricas** de desenvolvimento | 5 pts | ⚠ tem perguntas em aberto (ver §9) |
+| ~~**9**~~ | ~~Anúncios do admin~~ | ~~5 pts~~ | ✅ **FEITA** |
 
 ~~**A #10 é a mais rápida** — comece por ela.~~ ✅ **FEITA** em 2026-07-15 (ver abaixo).
 
@@ -913,7 +913,27 @@ anúncio novo reabre o pop-up de quem já viu o anterior, se é retroativo). Est
 > cada usuário no primeiro login **depois** de o anúncio ser criado. Depois disso, ele vai
 > para a lista de notificações, que já existe.
 
-**Status:** ☐ A fazer · **Pontos: 5** (estimativa a confirmar)
+**Status:** ✅ **FEITA** (2026-07-15) · **Pontos: 5**
+
+### ✅ Implementado (backend + client, 16 testes + mutação)
+- `announcements.json` (novo): anúncios globais `{id,title,body,roles,active,createdAt,createdBy}`.
+- Cada usuário guarda `seenAnnouncements:[ids]` em users.json (escondido do client via `publicUser`).
+- `GET /api/announcements/pending` — os pop-ups pendentes do usuário; `POST /:id/seen` fecha.
+- CRUD admin em `/api/admin/announcements`. A tela é `/admin/anuncios`.
+- `<AnnouncementPopup>` no App: abre no login, um de cada vez (o próximo abre ao fechar o atual).
+
+### Decisões fechadas (2026-07-14) — todas travadas em teste
+- **Público POR PAPEL** ao publicar (chips: alunos / visitantes / professores / admins).
+  Nenhum marcado = todos. Papel forjado no `roles` é descartado.
+- **O visitante VÊ** (é usuário real, demanda #1).
+- **Cada anúncio novo REABRE** o pop-up para quem já viu o anterior (cada anúncio é um evento).
+- **RETROATIVO**: quem se cadastra depois vê os anúncios ativos, enquanto publicados.
+- Despublicar (`active:false`) tira o pop-up sem apagar o anúncio (dá para republicar).
+
+### Notificações de desenvolvimento — não havia o que limpar
+O `notifications.json` NÃO é versionado, não tem seed, e o boot o cria vazio (`{}`). Um deploy
+limpo **já nasce sem notificações**. As genéricas que o usuário viu vinham de um volume dele —
+limpeza de dado, não de código. (O `announcements.json` foi incluído no `/api/admin/export`.)
 
 ### O que já existe (e dá para reaproveitar)
 - `notifications.json` + `pushNotification(userId, notif)` — mas hoje a notificação é

@@ -254,6 +254,9 @@ if (!fs.existsSync(path.join(DATA_DIR, 'achievements.json'))) writeJSON('achieve
 if (!fs.existsSync(path.join(DATA_DIR, 'mmr.json'))) writeJSON('mmr.json', { players: {}, characters: {} });
 if (!fs.existsSync(path.join(DATA_DIR, 'duels.json'))) writeJSON('duels.json', []);
 if (!fs.existsSync(path.join(DATA_DIR, 'notifications.json'))) writeJSON('notifications.json', {});
+// Anúncios do admin (demanda #9): avisos globais que viram pop-up no primeiro login de
+// cada usuário depois de publicados, e depois ficam na lista de notificações.
+if (!fs.existsSync(path.join(DATA_DIR, 'announcements.json'))) writeJSON('announcements.json', []);
 // Competências da trilha (demandas #5a/#5b). Nasce com as 5 originais.
 if (!fs.existsSync(path.join(DATA_DIR, 'skills.json'))) writeJSON('skills.json', defaultSkills());
 
@@ -321,7 +324,9 @@ console.log('[startup] DATA_DIR       =', DATA_DIR);
 // --- Auth helpers ---
 function publicUser(u) {
   if (!u) return null;
-  const { password, passwordHash, ...safe } = u;
+  // `seenAnnouncements` é controle interno (quais anúncios o usuário já fechou); não
+  // interessa ao client e cresce com o tempo — fica de fora.
+  const { password, passwordHash, seenAnnouncements, ...safe } = u;
   if (safe.role === 'therapist' && safe.teacherId) {
     try {
       const teacher = readJSON('users.json').find((t) => t.id === safe.teacherId);
@@ -952,6 +957,7 @@ app.get('/api/admin/export', requireAuth, requireRole('admin'), (req, res) => {
       mmr: readJSON('mmr.json', { players: {}, characters: {} }),
       duels: readJSON('duels.json', []),
       notifications: readJSON('notifications.json', {}),
+      announcements: readAnnouncements(),
       settings: readJSON('settings.json', {}),
     },
   };
@@ -1320,6 +1326,119 @@ app.post('/api/notifications/read-all', requireAuth, async (req, res) => {
     const all = readJSON('notifications.json', {});
     all[req.user.id] = (all[req.user.id] || []).map((n) => ({ ...n, read: true }));
     writeJSON('notifications.json', all);
+  });
+  res.json({ ok: true });
+});
+
+// =====================================================================
+// ANÚNCIOS DO ADMIN (demanda #9)
+// =====================================================================
+// Avisos GLOBAIS que o admin publica. Cada anúncio publicado que o usuário ainda não
+// confirmou (e cujo público inclua o papel dele) aparece como POP-UP no próximo login;
+// ao fechar, o usuário o "vê" e ele para de aparecer como pop-up — mas continua na lista
+// de notificações do sino.
+//
+// Decisões (2026-07-14): público POR PAPEL ao publicar; o visitante VÊ; cada anúncio novo
+// reabre para quem já viu o anterior (cada anúncio é um evento próprio); e é RETROATIVO —
+// quem se cadastrar depois também vê, enquanto o anúncio estiver ativo.
+//
+// Modelo de "quem já viu": cada usuário guarda `seenAnnouncements: [ids]` em users.json.
+// O visitante é um usuário real (demanda #1), então isso vale para ele igual.
+
+const ANNOUNCEMENT_ROLES = ['therapist', 'visitor', 'supervisor', 'admin'];
+
+function readAnnouncements() {
+  const list = readJSON('announcements.json', []);
+  return Array.isArray(list) ? list : [];
+}
+
+/** O anúncio atinge este papel? `roles` vazio/ausente = todos (retrocompatível). */
+function announcementTargetsRole(ann, role) {
+  if (!Array.isArray(ann.roles) || ann.roles.length === 0) return true;
+  return ann.roles.includes(role);
+}
+
+/** Anúncios ATIVOS que o usuário ainda não confirmou e que atingem o papel dele. */
+function pendingAnnouncementsFor(user) {
+  if (!user) return [];
+  const seen = new Set(Array.isArray(user.seenAnnouncements) ? user.seenAnnouncements : []);
+  return readAnnouncements()
+    .filter((a) => a.active !== false)
+    .filter((a) => announcementTargetsRole(a, user.role))
+    .filter((a) => !seen.has(a.id))
+    .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+}
+
+// O usuário vê os pop-ups pendentes (o client abre um de cada vez).
+app.get('/api/announcements/pending', requireAuth, (req, res) => {
+  res.json(pendingAnnouncementsFor(req.user).map(({ id, title, body, createdAt }) => ({ id, title, body, createdAt })));
+});
+
+// Confirmar que viu (fecha o pop-up). Marca no próprio usuário — não apaga o anúncio.
+app.post('/api/announcements/:id/seen', requireAuth, async (req, res) => {
+  await withFileLock('users.json', () => {
+    const users = readJSON('users.json');
+    const idx = users.findIndex((u) => u.id === req.user.id);
+    if (idx === -1) return;
+    const seen = new Set(Array.isArray(users[idx].seenAnnouncements) ? users[idx].seenAnnouncements : []);
+    seen.add(req.params.id);
+    users[idx].seenAnnouncements = [...seen];
+    writeJSON('users.json', users);
+  });
+  res.json({ ok: true });
+});
+
+// --- Admin: CRUD dos anúncios ---
+app.get('/api/admin/announcements', requireAuth, requireRole('admin'), (req, res) => {
+  res.json(readAnnouncements());
+});
+
+app.post('/api/admin/announcements', requireAuth, requireRole('admin'), async (req, res) => {
+  const title = clampStr(req.body && req.body.title, 200).trim();
+  const body = clampStr(req.body && req.body.body, 4000).trim();
+  if (!title) return res.status(400).json({ error: 'O título é obrigatório.', field: 'title' });
+  if (!body) return res.status(400).json({ error: 'O texto é obrigatório.', field: 'body' });
+
+  // Público: só papéis conhecidos; lista vazia = todos.
+  const roles = Array.isArray(req.body.roles)
+    ? req.body.roles.filter((r) => ANNOUNCEMENT_ROLES.includes(r))
+    : [];
+
+  const ann = {
+    id: 'ann' + Date.now() + '-' + crypto.randomBytes(3).toString('hex'),
+    title, body, roles,
+    active: true,
+    createdAt: new Date().toISOString(),
+    createdBy: req.user.username,
+  };
+  await withFileLock('announcements.json', () => {
+    const all = readAnnouncements();
+    all.push(ann);
+    writeJSON('announcements.json', all);
+  });
+  res.json(ann);
+});
+
+// Despublicar / republicar (não apaga o histórico de quem já viu).
+app.put('/api/admin/announcements/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  const result = await withFileLock('announcements.json', () => {
+    const all = readAnnouncements();
+    const idx = all.findIndex((a) => a.id === req.params.id);
+    if (idx === -1) return { status: 404, error: 'Anúncio não encontrado.' };
+    if ('active' in (req.body || {})) all[idx].active = !!req.body.active;
+    if ('title' in (req.body || {})) all[idx].title = clampStr(req.body.title, 200).trim() || all[idx].title;
+    if ('body' in (req.body || {})) all[idx].body = clampStr(req.body.body, 4000).trim() || all[idx].body;
+    if (Array.isArray(req.body.roles)) all[idx].roles = req.body.roles.filter((r) => ANNOUNCEMENT_ROLES.includes(r));
+    writeJSON('announcements.json', all);
+    return { ann: all[idx] };
+  });
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result.ann);
+});
+
+app.delete('/api/admin/announcements/:id', requireAuth, requireRole('admin'), async (req, res) => {
+  await withFileLock('announcements.json', () => {
+    writeJSON('announcements.json', readAnnouncements().filter((a) => a.id !== req.params.id));
   });
   res.json({ ok: true });
 });

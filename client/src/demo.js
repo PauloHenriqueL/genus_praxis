@@ -136,6 +136,21 @@ export const demoApi = {
   getNotifications: () => delay({ items: [], unread: 0 }),
   markNotificationRead: () => delay({ ok: true }),
   markAllNotificationsRead: () => delay({ ok: true }),
+  // Anúncios (demanda #9): no modo demonstração não há servidor para publicá-los.
+  getPendingAnnouncements: () => delay([]),
+  markAnnouncementSeen: () => delay({ ok: true }),
+  // Admin de competências e acesso do visitante: só com servidor. No modo demonstração
+  // as telas de admin não são alcançáveis, mas a paridade api/demo exige os métodos.
+  adminCreateSkill: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminUpdateSkill: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminReorderSkills: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminDeleteSkill: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminSkillOrphans: () => delay([]),
+  adminVisitorAccess: () => Promise.reject(new Error('Indisponível no modo demonstração')),
+  adminListAnnouncements: () => delay([]),
+  adminCreateAnnouncement: () => Promise.reject(new Error('Anúncios indisponíveis no modo demonstração')),
+  adminUpdateAnnouncement: () => Promise.reject(new Error('Anúncios indisponíveis no modo demonstração')),
+  adminDeleteAnnouncement: () => delay({ ok: true }),
   listActiveSessions: () => delay([]),
 
   getLogs: (userId) => {

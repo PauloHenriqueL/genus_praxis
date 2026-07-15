@@ -263,3 +263,19 @@
 }
 .orphan-list { margin: 8px 0 0; padding-left: 20px; color: var(--text-soft); font-size: 13.5px; line-height: 1.7; }
 .orphan-list .muted { color: var(--text-muted); }
+
+/* Chips de público do anúncio (demanda #9). */
+.announcement-roles { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.role-chip.on { border-color: var(--accent); color: var(--accent); background: rgba(255, 122, 26, 0.1); }
+.role-chip input { accent-color: var(--accent); }

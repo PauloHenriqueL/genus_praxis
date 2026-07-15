@@ -214,6 +214,14 @@ const realApi = {
   markNotificationRead: (id) => request(`/notifications/${id}/read`, { method: 'POST', body: {} }),
   markAllNotificationsRead: () => request('/notifications/read-all', { method: 'POST', body: {} }),
 
+  // Anúncios do admin (demanda #9): pop-up no primeiro login após publicado.
+  getPendingAnnouncements: () => request('/announcements/pending'),
+  markAnnouncementSeen: (id) => request(`/announcements/${id}/seen`, { method: 'POST', body: {} }),
+  adminListAnnouncements: () => request('/admin/announcements'),
+  adminCreateAnnouncement: (data) => request('/admin/announcements', { method: 'POST', body: data }),
+  adminUpdateAnnouncement: (id, data) => request(`/admin/announcements/${id}`, { method: 'PUT', body: data }),
+  adminDeleteAnnouncement: (id) => request(`/admin/announcements/${id}`, { method: 'DELETE' }),
+
   // Sessões ativas (persistência de sessão não finalizada)
   listActiveSessions: () => request('/active-sessions'),
   getActiveSession: (type, itemId) => request(`/active-sessions/${type}/${encodeURIComponent(itemId)}`),

@@ -23,9 +23,11 @@ import AdminEntrevistador from './pages/AdminEntrevistador';
 import AdminUsers from './pages/AdminUsers';
 import AdminFeatures from './pages/AdminFeatures';
 import AdminSkills from './pages/AdminSkills';
+import AdminAnnouncements from './pages/AdminAnnouncements';
 import NotificationBell from './components/NotificationBell';
 import SystemUpdates from './components/SystemUpdates';
 import LockedModal from './components/LockedModal';
+import AnnouncementPopup from './components/AnnouncementPopup';
 import { FeaturesProvider, useFeatures } from './features';
 import { SkillsProvider } from './utils/skills';
 import { api, getToken, clearAuth, onSessionExpired, onVisitorExpired, DEMO } from './api';
@@ -284,6 +286,9 @@ function AppShell({ onUserChange }) {
               <Link to="/admin/contas" title="Contas" className={isActive('/admin/contas') ? 'active' : ''}>
                 {ICONS.users}<span>Contas</span>
               </Link>
+              <Link to="/admin/anuncios" title="Anúncios" className={isActive('/admin/anuncios') ? 'active' : ''}>
+                {ICONS.flame}<span>Anúncios</span>
+              </Link>
               <Link to="/admin/acessos" title="Acesso às funcionalidades" className={isActive('/admin/acessos') ? 'active' : ''}>
                 {ICONS.admin}<span>Acessos</span>
               </Link>
@@ -345,6 +350,7 @@ function AppShell({ onUserChange }) {
           {isAdmin && <Route path="/admin/contas" element={<AdminUsers user={user} />} />}
           {isAdmin && <Route path="/admin/acessos" element={<AdminFeatures />} />}
           {isAdmin && <Route path="/admin/competencias" element={<AdminSkills />} />}
+          {isAdmin && <Route path="/admin/anuncios" element={<AdminAnnouncements />} />}
 
           <Route path="*" element={<Navigate to={defaultRoute(user)} replace />} />
         </Routes>
@@ -357,6 +363,9 @@ function AppShell({ onUserChange }) {
           onClose={() => setLockedFeature(null)}
         />
       )}
+
+      {/* Anúncios do admin (demanda #9): pop-up no primeiro login após publicado. */}
+      <AnnouncementPopup userId={user.id} />
     </div>
   );
 }
