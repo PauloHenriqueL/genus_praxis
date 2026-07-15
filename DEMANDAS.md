@@ -890,11 +890,10 @@ prioridade sugerida — tudo levantado na sessão de 2026-07-14:
 
 | # | o que é | tamanho | decisão? |
 |---|---|---|---|
-| **10** | **Desligar o TTL de 30 dias dos logs** (não apagar mais automaticamente) | 2 pts | ✅ decidido: desligar |
+| ~~**10**~~ | ~~Desligar o TTL de 30 dias dos logs~~ | ~~2 pts~~ | ✅ **FEITA** |
 | **9** | **Anúncios do admin** — publicar um aviso que vira pop-up no 1º login e depois entra na lista de notificações; e **limpar as notificações genéricas** de desenvolvimento | 5 pts | ⚠ tem perguntas em aberto (ver §9) |
 
-**A #10 é a mais rápida e mais segura** — comece por ela. É trocar uma constante por uma env,
-esconder um aviso no client, e travar em teste. Detalhe completo em §10 abaixo.
+~~**A #10 é a mais rápida** — comece por ela.~~ ✅ **FEITA** em 2026-07-15 (ver abaixo).
 
 **A #9 precisa de 4 decisões suas antes de eu codar** (quem vê, se o visitante vê, se um
 anúncio novo reabre o pop-up de quem já viu o anterior, se é retroativo). Estão listadas em
@@ -948,7 +947,21 @@ anúncio novo reabre o pop-up de quem já viu o anterior, se é retroativo). Est
 > "No sistema antigo tem a mensagem de que os logs serão apagados em 30 dias, mas isso não é
 > mais verdade, porque agora temos o /data, certo?"
 
-**Status:** ☐ A fazer (amanhã) · **DECIDIDO: desligar o TTL** · **Pontos: 2**
+**Status:** ✅ **FEITA** (2026-07-15) · **Pontos: 2**
+
+### ✅ Implementado
+- `LOG_TTL_DAYS` virou env: `0` (ou vazio) = **nunca expira** (o novo padrão); `> 0` religa o
+  prune sem redeploy. Documentada no `.env.example`.
+- `pruneExpiredLogs()` e `logExpiresAt()` respeitam o desligado (retornam cedo).
+- `GET /api/logs/policy` devolve `{ ttlDays: 0 }`; o client esconde o aviso de expiração e o
+  selo "expira em Xd" quando `ttlDays === 0` (o fallback local de 30 dias foi REMOVIDO — ele
+  inventaria uma data que não existe mais).
+- Verificado: log de 400 dias sobrevive ao `GET /api/logs`; religando `LOG_TTL_DAYS=30` (boot
+  novo) a policy volta a `30`. Travado por teste (799 passando) — inclusive a leitura da env
+  num processo separado.
+- ⚠ O TTL do **duelo** (`DUEL_TTL_MS`, 30 dias) foi deixado INTACTO — o usuário falou só de logs.
+
+### (registro original da decisão)
 
 ### ✅ DECISÃO DO USUÁRIO (2026-07-14): os logs NÃO expiram mais
 > "Eu não vou querer mais que os logs apaguem em 30 dias. Eles têm que ficar no /data e eu

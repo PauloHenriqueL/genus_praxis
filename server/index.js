@@ -1646,7 +1646,21 @@ app.put('/api/freeplay/:id/photo', requireAuth, requireRole('admin'), writeLimit
 // =====================================================================
 // LOGS
 // =====================================================================
-const LOG_TTL_DAYS = 30;
+// TTL dos logs. DECISÃO DO USUÁRIO (2026-07-14): os logs NÃO expiram mais — ficam no
+// volume (/data) até o admin apagar na mão. `0` (o padrão) = nunca expira; a infraestrutura
+// do prune fica viva atrás da env `LOG_TTL_DAYS`, então dá para religar sem redeploy de
+// código se um dia a decisão mudar.
+//
+// ⚠ Consequência aceita: sem TTL, o logs.json cresce para sempre. O arquivo é lido e
+// reescrito INTEIRO a cada log salvo — ~147 ms de event loop bloqueado com 14 MB. O próximo
+// teto de escala do projeto passa a ser este arquivo (a saída definitiva é migrar para
+// SQLite). Apagar no /data alivia, não resolve.
+const LOG_TTL_DAYS = (() => {
+  const raw = process.env.LOG_TTL_DAYS;
+  if (raw === undefined || raw === '') return 0;   // padrão: desligado
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+})();
 const LOG_TTL_MS = LOG_TTL_DAYS * 24 * 60 * 60 * 1000;
 const LOG_MAX_MESSAGES = 500;
 const LOG_MAX_MESSAGE_LEN = 20000;
@@ -1668,11 +1682,13 @@ function normalizeSkillId(v) {
 }
 
 function logExpiresAt(log) {
+  if (LOG_TTL_DAYS === 0) return null;   // TTL desligado: o log não tem data de expiração
   const t = new Date(log.timestamp || 0).getTime();
   if (!Number.isFinite(t) || t === 0) return null;
   return new Date(t + LOG_TTL_MS).toISOString();
 }
 function pruneExpiredLogs() {
+  if (LOG_TTL_DAYS === 0) return 0;      // TTL desligado: nada é apagado automaticamente
   let logs;
   try { logs = readJSON('logs.json'); } catch { return 0; }
   if (!Array.isArray(logs) || logs.length === 0) return 0;

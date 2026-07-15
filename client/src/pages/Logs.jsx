@@ -45,12 +45,11 @@ function formatDate(ts) {
 function sanitizeFilename(name) {
   return (name || 'log').replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, '_').slice(0, 80);
 }
-const LOG_TTL_DAYS_FALLBACK = 30;
+// Data de expiração de um log. Só existe se o servidor a informar (`expiresAt`). Com o TTL
+// desligado (decisão de 2026-07-14), o servidor manda `expiresAt: null` e nada expira —
+// por isso NÃO há mais fallback local inventando uma data de 30 dias.
 function logExpiresAt(log) {
-  if (log.expiresAt) return new Date(log.expiresAt);
-  const base = new Date(log.timestamp || 0);
-  if (isNaN(base)) return null;
-  return new Date(base.getTime() + LOG_TTL_DAYS_FALLBACK * 86400000);
+  return log.expiresAt ? new Date(log.expiresAt) : null;
 }
 function daysUntilExpiry(log) {
   const exp = logExpiresAt(log);
@@ -59,7 +58,7 @@ function daysUntilExpiry(log) {
 }
 function ExpiryNote({ log }) {
   const exp = logExpiresAt(log);
-  if (!exp) return null;
+  if (!exp) return null;   // TTL desligado ou log sem data → sem selo de expiração
   const days = daysUntilExpiry(log);
   const soon = days != null && days <= 7;
   return (
@@ -457,7 +456,9 @@ export default function Logs({ user, userId }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [ttlDays, setTtlDays] = useState(LOG_TTL_DAYS_FALLBACK);
+  // 0 = TTL desligado (o padrão atual). O useEffect abaixo corrige se o servidor
+  // devolver um TTL ligado — daí o aviso de expiração reaparece.
+  const [ttlDays, setTtlDays] = useState(0);
   const isAdmin = user.role === 'admin';
   // Modo "meus logs": aluno sempre; ou quando a rota passa userId={user.id}
   // explicitamente (/logs). A rota /supervisor renderiza SEM userId → o
@@ -499,10 +500,15 @@ export default function Logs({ user, userId }) {
 
       {error && <div className="alert error">{error}</div>}
 
-      <div className="log-expiry-banner">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-        <span>Os logs expiram automaticamente após <strong>{ttlDays} dias</strong>. Baixe os que quiser guardar antes disso.</span>
-      </div>
+      {/* O aviso de expiração só aparece se o TTL estiver LIGADO. Com o TTL desligado
+          (o padrão atual), ele mentiria — os logs ficam no volume até serem apagados
+          manualmente. `ttlDays` vem do servidor (GET /api/logs/policy). */}
+      {ttlDays > 0 && (
+        <div className="log-expiry-banner">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+          <span>Os logs expiram automaticamente após <strong>{ttlDays} dias</strong>. Baixe os que quiser guardar antes disso.</span>
+        </div>
+      )}
 
       {loading ? (
         <div className="card" style={{ textAlign: 'center', padding: 40 }}><span className="spinner" /> <span style={{ marginLeft: 12 }}>Carregando sessões…</span></div>

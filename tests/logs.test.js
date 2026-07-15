@@ -154,30 +154,68 @@ describe('POST /api/logs — MMR', () => {
   });
 });
 
-describe('GET /api/logs — TTL / prune', () => {
-  it('log com 40 dias é removido pelo prune; recente sobrevive; expiresAt presente', async () => {
+// Decisão do usuário (2026-07-14): os logs NÃO expiram mais por padrão. O TTL fica
+// desligado (`LOG_TTL_DAYS=0`); os logs ficam no volume até o admin apagar na mão. A
+// infraestrutura do prune continua viva atrás da env, então dá para religar sem redeploy.
+// O harness roda sem `LOG_TTL_DAYS`, ou seja, com o TTL DESLIGADO — o estado de produção.
+describe('GET /api/logs — TTL desligado por padrão', () => {
+  it('log de 400 dias NÃO é apagado (o prune não roda com TTL off)', async () => {
     const admin = await loginAs('admin');
-    const antigo = makeLog({ id: 'log-old', daysAgo: 40, userId: '3' });
+    const antigo = makeLog({ id: 'log-old', daysAgo: 400, userId: '3' });
     const recente = makeLog({ id: 'log-new', daysAgo: 1, userId: '3' });
     writeData('logs.json', [antigo, recente]);
 
     const res = await request(app).get('/api/logs').set(authHeader(admin));
     expect(res.status).toBe(200);
-    const ids = res.body.map((l) => l.id);
-    expect(ids).toContain('log-new');
-    expect(ids).not.toContain('log-old');
-    // o prune persistiu no disco
-    expect(readData('logs.json').map((l) => l.id)).toEqual(['log-new']);
-    // expiresAt vem no GET
-    const novo = res.body.find((l) => l.id === 'log-new');
-    expect(novo.expiresAt).toBeTruthy();
+    // Os DOIS sobrevivem — nada é apagado.
+    expect(res.body.map((l) => l.id).sort()).toEqual(['log-new', 'log-old']);
+    expect(readData('logs.json').length).toBe(2);
   });
 
-  it('GET /api/logs/policy retorna { ttlDays: 30 }', async () => {
+  it('com o TTL desligado, o log não tem expiresAt (não mente sobre expiração)', async () => {
+    const admin = await loginAs('admin');
+    writeData('logs.json', [makeLog({ id: 'log-x', daysAgo: 1, userId: '3' })]);
+    const res = await request(app).get('/api/logs').set(authHeader(admin));
+    expect(res.body[0].expiresAt).toBeNull();
+  });
+
+  it('GET /api/logs/policy retorna { ttlDays: 0 } (o client esconde o aviso)', async () => {
     const aluno = await loginAs('aluno');
     const res = await request(app).get('/api/logs/policy').set(authHeader(aluno));
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ ttlDays: 30 });
+    expect(res.body).toEqual({ ttlDays: 0 });
+  });
+});
+
+// A env religa o TTL. Ela é lida no boot, então precisa de um processo NOVO — mesmo
+// harness de `features.test.js`. Aqui basta provar que o VALOR é lido; o efeito do prune
+// (apagar de fato) é HTTP e já está coberto acima no modo desligado.
+describe('LOG_TTL_DAYS religa o TTL (via env, no boot)', () => {
+  const { execFileSync } = require('child_process');
+  const path = require('path');
+
+  const bootPolicy = (ttl) => {
+    const out = execFileSync(process.execPath, ['-e', `
+      const app = require('./server/index.js');
+      const layer = app._router.stack.find((l) => l.route && l.route.path === '/api/logs/policy');
+      const res = { json: (x) => console.log(JSON.stringify(x)) };
+      layer.route.stack[layer.route.stack.length - 1].handle({}, res);
+    `], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, LOG_TTL_DAYS: ttl, JWT_SECRET: 'x'.repeat(48), OPENAI_API_KEY: '', NODE_ENV: 'test' },
+      encoding: 'utf8',
+    });
+    return JSON.parse(out.trim().split('\n').pop());
+  };
+
+  it('LOG_TTL_DAYS=30 → policy { ttlDays: 30 }', () => {
+    expect(bootPolicy('30')).toEqual({ ttlDays: 30 });
+  });
+
+  it('LOG_TTL_DAYS=0 e valores inválidos → desligado (ttlDays: 0)', () => {
+    expect(bootPolicy('0')).toEqual({ ttlDays: 0 });
+    expect(bootPolicy('abc')).toEqual({ ttlDays: 0 });
+    expect(bootPolicy('-5')).toEqual({ ttlDays: 0 });
   });
 });
 
